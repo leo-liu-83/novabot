@@ -16,7 +16,7 @@ This guide covers the shortest path from source code to a running NovaBot, plus 
 ### Interactive installer
 
 ```bash
-cd /path/to/novabot-0.1.0
+cd /path/to/novabot
 chmod +x install.sh
 ./install.sh
 ```

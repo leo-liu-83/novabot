@@ -16,7 +16,7 @@
 ### 2.1 推荐：交互式安装脚本
 
 ```bash
-cd /path/to/novabot-0.1.0
+cd /path/to/novabot
 chmod +x install.sh
 ./install.sh
 ```

@@ -1,6 +1,6 @@
 # NovaBot
 
-Version: `0.1.0`
+Version: `0.1.1` | [Changelog](CHANGELOG.md)
 
 ## 1. Introduction
 
@@ -22,7 +22,7 @@ Requires Python **3.12+**.
 ### Linux
 
 ```bash
-cd /path/to/novabot-0.1.0
+cd /path/to/novabot
 chmod +x install.sh
 ./install.sh
 novabot
@@ -130,6 +130,7 @@ A project **registers an existing directory**; it does not copy or move anything
 - [HTTP API](docs/en/api.md)
 - [Security](docs/en/security.md)
 - [Troubleshooting](docs/en/troubleshooting.md)
+- [Versioning and releases](docs/en/versioning.md)
 
 ## 5. Disclaimer
 

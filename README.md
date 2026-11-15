@@ -1,6 +1,6 @@
 # NovaBot
 
-版本：`0.1.0`
+版本：`0.1.1` ｜ [变更日志](CHANGELOG.md)
 
 ## 1. 简介
 
@@ -22,7 +22,7 @@ NovaBot 是一个运行在本机的 AI agent 控制台。它把模型对话、�
 ### Linux
 
 ```bash
-cd /path/to/novabot-0.1.0
+cd /path/to/novabot
 chmod +x install.sh
 ./install.sh
 novabot
@@ -120,6 +120,7 @@ install.bat -InitConfig
 | [HTTP API](docs/api.md) | 鉴权、会话、聊天 SSE、管理接口 |
 | [安全与权限](docs/security.md) | 身份、执行档位、技能审查、SSRF、已知风险 |
 | [排错与限制](docs/troubleshooting.md) | 常见错误、模型/网络问题、已知限制 |
+| [版本与发布](docs/versioning.md) | 版本号规则、发布产物、变更日志口径 |
 
 ### English manual
 
