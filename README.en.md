@@ -10,6 +10,7 @@ NovaBot is a local AI-agent console. It combines model chat, files and attachmen
 - Single-user and multi-user modes; administrators control execution ceilings, search quotas and MCP grants
 - Models use OpenAI-compatible endpoints: vendor APIs, aggregators or intranet gateways
 - Skills and tools are permission-gated; risky actions can require confirmation
+- Projects: register an existing directory, work inside it, and share its notes across that project's sessions
 - Chinese and English interfaces
 
 See the manual index below for details.
@@ -83,6 +84,7 @@ Uninstall removes the launcher only by default: `./uninstall.sh` (Windows `unins
 | Chat and sessions | Shared sessions, messages and checkpoints; streaming, stop, retry, context compaction |
 | Models | Multiple providers, OpenAI-compatible APIs, dynamic discovery, thinking switch, per-session selection |
 | Multi-user | Anonymous / user / administrator; login, registration, password, account deletion, session handover |
+| Projects | Register an existing directory as the working root; project sessions share `AGENTS.md` and project notes, with file access confined to the directory |
 | Skills | System / shared / private layers; script skills are scanned before release; unreleased skills are not loaded |
 | Attachments and multimodal | File paste, path detection, image vision input, PDF/Office conversion, upload limits and draft cleanup |
 | Web search and fetch | Multi-tier fallback, per-user quotas, fetch confirmation, domain allowlist, SSRF protection |
@@ -91,6 +93,17 @@ Uninstall removes the launcher only by default: `./uninstall.sh` (Windows `unins
 | Execution levels | T0–T4: no commands, skill scripts, read-only commands, confirm each command, no confirmation |
 | Interfaces | TUI and web console; Chinese/English; light, dark and system themes |
 | Data and deployment | Local SQLite and files; installers, config template, upgrade and backup guidance |
+
+### Projects
+
+A project **registers an existing directory**; it does not copy or move anything — the code already there is used as is.
+
+- A session may belong to a project. Once it does, the project directory is its working root: file access is confined to it, and paths outside the project or sensitive files require confirmation
+- All sessions of a project share project knowledge: the root `AGENTS.md` and `.novabot/notes/`; global memory stays per-user and cross-project, holding summaries only
+- A project can bind recommended skills; project sessions default to execution level T3 and can be raised to T4, which inside a project means "no confirmation"
+- The web console offers a projects menu, per-project session lists and session transfer; the TUI can create a project from the current directory and rename projects
+- Projects are a separately granted capability: enabled by default in single-user mode, granted per account by an administrator in multi-user mode
+- Explicit non-goals: no automatic directory creation or relocation, no sharing between projects, no project-level long-term memory, and no process-level sandbox
 
 ## 4. Manual index
 

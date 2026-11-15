@@ -79,6 +79,7 @@ curl -X POST http://127.0.0.1:9000/api/v1/auth/login \
 | DELETE | `/sessions/{id}` | 删除会话 |
 | GET | `/sessions/{id}/messages?limit=30&before_id=...` | keyset 分页读取历史 |
 | PATCH | `/sessions/{id}/level` | 调整本会话执行档位 |
+| PATCH | `/sessions/{id}/project` | 设置或取消会话的项目归属 |
 | POST | `/sessions/{id}/attachments` | 上传附件 |
 | DELETE | `/sessions/{id}/attachments/{file_id}` | 删除未发送附件 |
 | GET | `/sessions/usage?days=7` | 近 N 天 token 用量 |
@@ -187,7 +188,26 @@ GET /api/v1/models
 
 返回 `range / summary / activity / tokens / models / users`，只包含账号、模型和 token 聚合，不返回消息正文。
 
-## 11. 错误码
+## 11. 项目
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/projects` | 活动项目列表 |
+| POST | `/projects` | 登记一个已有目录作为项目 |
+| GET | `/projects/browse?path=...` | 浏览本机目录（选项目目录用） |
+| GET | `/projects/{id}` | 项目详情 |
+| PATCH | `/projects/{id}` | 改名 / 调整推荐技能 |
+| DELETE | `/projects/{id}` | 归档项目（不删除目录） |
+| GET | `/projects/{id}/agents` | 读取项目根 `AGENTS.md` |
+| PUT | `/projects/{id}/agents` | 保存或手工创建 `AGENTS.md` |
+| DELETE | `/projects/{id}/agents` | 删除 `AGENTS.md` |
+| POST | `/projects/{id}/agents-draft` | 按项目现状生成草稿（不落盘） |
+| POST | `/projects/{id}/agents` | 写入用户确认过的草稿 |
+| POST | `/projects/{id}/agents-generate` | 让模型生成 `AGENTS.md` 草稿 |
+
+需要项目功能授权；未开通时返回 `project.disabled`（403）。
+
+## 12. 错误码
 
 常见稳定码：
 

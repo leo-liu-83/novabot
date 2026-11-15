@@ -74,6 +74,15 @@ Logged-in users only.
 | `/passwd` | Change password |
 | `/delete-account` | Delete the account |
 
+### Projects
+
+| Command | Description |
+|---|---|
+| `/project` | Create a project for the current directory, or rename an existing one (always the current directory) |
+| `/project-limit` | Grant or revoke the projects capability per account (administrator) |
+
+Neither command is listed when the capability is not enabled for the account.
+
 Command visibility depends on identity, configuration and permissions.
 
 ## 3. TUI shortcuts
@@ -103,7 +112,8 @@ Main pages:
 | Account | Password, avatar, statistics |
 | Users & access | Admin: accounts, ceilings, quotas, MCP grants |
 | Global search | Admin global providers |
-| System | Read-only diagnostics |
+| Projects | Project list and per-project sessions; create / rename / archive; edit or generate the project `AGENTS.md` |
+| System | Diagnostics; the model catalog can switch the agent default model |
 
 ## 5. HTTP API
 

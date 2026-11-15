@@ -55,6 +55,13 @@ Scanning is advisory:
 - The guarantee is that unreleased skill bodies cannot be read by name
 - `grep -r "x" .` can still walk the workspace; full isolation requires OS-level sandboxing, which this version does not provide
 
+Project sessions add their own boundary (see [features](features.md#13-projects)):
+
+- The working root is the project directory; reads and writes inside it are allowed directly, while paths outside it and sensitive files ask
+- T4 inside a project narrows to "no confirmation inside the project": commands naming paths outside it still ask
+- The project's `AGENTS.md` and `.novabot/notes/*.md` are **content authored by the project**, injected into the model context as instructions; review an untrusted project first
+- "Always allow" on a confirmation card is remembered per path and only for the current session; a new session asks again
+
 ## 5. Web search and fetch
 
 ### Fetch permission

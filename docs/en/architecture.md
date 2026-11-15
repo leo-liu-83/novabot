@@ -52,7 +52,7 @@ Default `~/.novabot/` (`%USERPROFILE%\.novabot\` on Windows):
 ├── novabot.json              # user config
 ├── ui.json                   # TUI theme and language
 ├── data/
-│   ├── novabot.db            # sessions, messages, accounts, reviews, quotas
+│   ├── novabot.db            # sessions, messages, accounts, projects, reviews, quotas
 │   └── login.json            # TUI login token when remember_login is enabled
 ├── sessions/
 │   └── <thread_key>/         # attachments, compacted history, large tool results
@@ -63,6 +63,8 @@ Default `~/.novabot/` (`%USERPROFILE%\.novabot\` on Windows):
 ```
 
 `config/config.json` in the release is the built-in default configuration. User overrides go to `~/.novabot/novabot.json`.
+
+Projects are the exception: project rows (name, directory, recommended skills) live in `novabot.db`, but **project knowledge stays inside the project directory** — the root `AGENTS.md` and `.novabot/notes/*.md` travel with that directory, not with `~/.novabot/`.
 
 ## 4. Identity and sessions
 
@@ -80,6 +82,14 @@ Multi-user mode requires exactly one administrator, created in the local TUI.
 - TUI and Web use the same `sessions` / `messages` tables
 - Message history is paginated; the server restores context from checkpoints and budget
 - Deleting a session waits for active turns, then cleans messages, checkpoints and attachments
+- A session may belong to a project (`sessions.project_id`); its working root, file boundary and injected project knowledge then follow the project
+
+### Projects
+
+- A project registers an existing directory: name + directory + description + recommended skills; active projects are unique per account by name and path
+- Archiving only sets `archived_at`; the directory is untouched and files are not moved, and the same name or path can be registered again afterwards
+- A project session works inside the project directory; project knowledge comes from the root `AGENTS.md` (injected every turn, truncated at 12 KB) and `.novabot/notes/*.md` (file-name index only, up to 200 files and 8 KB)
+- Membership only affects later context and file boundaries; existing sessions, attachments and files are never relocated
 
 ## 5. Security boundaries
 
@@ -91,6 +101,7 @@ Multi-user mode requires exactly one administrator, created in the local TUI.
 | Network policy | Fetch confirmation, domain allowlist and SSRF protection |
 | MCP grants | Admin decides whether to enable MCP; users choose servers/tools |
 | Confirmation gates | File writes, deletes, some MCP calls and web fetches can require approval |
+| Project boundary | Project sessions stay inside the project directory; out-of-project paths and sensitive files ask, and T4 narrows to "no confirmation inside the project" |
 
 These boundaries do not replace each other. MCP tools are independent of execution levels, and a clean skill scan does not mean the skill is safe.
 

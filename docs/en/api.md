@@ -79,6 +79,7 @@ Anonymous identity exists only in the TUI. In multi-user mode every API request 
 | DELETE | `/sessions/{id}` | Delete session |
 | GET | `/sessions/{id}/messages?limit=30&before_id=...` | Paginated history |
 | PATCH | `/sessions/{id}/level` | Change session execution level |
+| PATCH | `/sessions/{id}/project` | Set or clear the session's project |
 | POST | `/sessions/{id}/attachments` | Upload an attachment |
 | DELETE | `/sessions/{id}/attachments/{file_id}` | Delete an unsent attachment |
 | GET | `/sessions/usage?days=7` | Token usage for N days |
@@ -183,7 +184,26 @@ Report query parameters:
 
 Returns `range / summary / activity / tokens / models / users`; aggregates only, never message content.
 
-## 11. Error codes
+## 11. Projects
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/projects` | List active projects |
+| POST | `/projects` | Register an existing directory as a project |
+| GET | `/projects/browse?path=...` | Browse local directories (for picking a project directory) |
+| GET | `/projects/{id}` | Project details |
+| PATCH | `/projects/{id}` | Rename or change recommended skills |
+| DELETE | `/projects/{id}` | Archive the project (the directory is kept) |
+| GET | `/projects/{id}/agents` | Read the root `AGENTS.md` |
+| PUT | `/projects/{id}/agents` | Save or create `AGENTS.md` by hand |
+| DELETE | `/projects/{id}/agents` | Delete `AGENTS.md` |
+| POST | `/projects/{id}/agents-draft` | Draft `AGENTS.md` from the project (nothing is written) |
+| POST | `/projects/{id}/agents` | Persist a draft the user approved |
+| POST | `/projects/{id}/agents-generate` | Let the model generate an `AGENTS.md` draft |
+
+Requires the projects capability; otherwise the API returns `project.disabled` (403).
+
+## 12. Error codes
 
 Common stable codes:
 

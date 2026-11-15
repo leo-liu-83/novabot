@@ -8,6 +8,7 @@
 - Automatic context compaction near the window limit; manual `/compact`
 - Compaction records persist and can be replayed
 - Paginated history for long conversations
+- A session may belong to a project, in which case its working root becomes the project directory; see [§13 Projects](#13-projects)
 
 ## 2. Models
 
@@ -131,3 +132,30 @@ Administrators can open **Reports** for aggregate analytics:
 - Time ranges: last 7 / 30 / 90 days; granularity: daily or weekly
 - Aggregates only; message content is never returned
 - Backfilled historical model rows make call counts approximate
+
+## 13. Projects
+
+A project ties sessions to a real directory. It does not copy or move anything: it **registers an existing directory**, and file access plus project knowledge revolve around it.
+
+| Concept | Meaning |
+|---|---|
+| Project | Name + directory + description + recommended skills; active projects are unique per account by name and path, and names/paths can be reused after archiving |
+| Membership | A session may belong to a project or not; sessions without one behave exactly as before |
+| Working root | A project session works inside the project directory, with reads and writes confined to it |
+| Project knowledge | The root `AGENTS.md` is injected every turn (truncated when long); `.novabot/notes/*.md` contributes only a file-name index, and the agent reads bodies on demand |
+| Recommended skills | A soft priority only; it does not change skill visibility or the review gate |
+
+Permissions and boundaries:
+
+- Projects are a separately granted capability: available to the single-user owner by default; in multi-user mode an administrator grants it per account with `/project-limit`, and administrators always have it
+- Reads and writes inside the project directory are allowed directly; paths outside it and sensitive files require confirmation
+- Project sessions cap the shell at T3 by default; T4 must be raised explicitly with `/exec`, and its meaning narrows from "any command, no confirmation" to "no confirmation inside the project" — commands naming paths outside the project still ask
+- "Always allow" on a confirmation card is remembered per path and applies to the current session only; moving or switching a session to another project clears those approvals so they cannot leak into it
+- Archiving a project stops using it; the directory is not deleted and existing files are not moved
+
+Entry points:
+
+- Web: the projects page (`#/projects`) creates, renames and archives projects, edits or generates the project `AGENTS.md`, and lists the project's sessions
+- TUI: `/project` creates or renames a project for the current directory (a new project also adopts the current session when it has none); `/session` shows which project a session belongs to
+
+Explicit non-goals: no automatic directory creation or relocation, no sharing between projects, no project-level long-term memory, and no process-level sandbox.
