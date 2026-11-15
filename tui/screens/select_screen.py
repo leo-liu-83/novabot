@@ -117,13 +117,15 @@ class SelectScreen(ModalScreen[Optional[str]]):
         Binding("ctrl+d", "delete", "Delete", priority=True),
     ]
 
-    def __init__(self, title: str, items: list, hint: str=DEFAULT_HINT, on_delete: Optional[Callable[[str], None]]=None, filterable: bool=False, items_factory: Optional[Callable[[dict], list]]=None, content_highlight: bool=True, selected: Optional[str]=None, **kwargs):
+    def __init__(self, title: str, items: list, hint: str=DEFAULT_HINT, on_delete: Optional[Callable[[str], None]]=None, filterable: bool=False, items_factory: Optional[Callable[[dict], list]]=None, content_highlight: bool=True, selected: Optional[str]=None, empty_text: str="", **kwargs):
         super().__init__(**kwargs)
         self._title = t(title)
         self._hint = t(hint)
         self._on_delete = on_delete
         self._filterable = filterable
         self._items_factory = items_factory
+        # 过滤后没有任何命中时显示的占位项；空字符串表示不显示
+        self._empty_text = t(empty_text) if empty_text else ""
         # 内容层自绘高亮背景（需随光标重建，适合少量条目）；
         # False=高亮交给OptionList的widget层CSS，光标移动零重建，适合大列表
         self._content_highlight = content_highlight
@@ -140,7 +142,7 @@ class SelectScreen(ModalScreen[Optional[str]]):
             with Container(id="select-panel"):
                 yield Label(self._title, id="select-title")
                 if self._filterable:
-                    yield Input(placeholder="Search", id="select-search")
+                    yield Input(placeholder=t(t("搜索")), id="select-search")
                 yield OptionList(id="select-options")
                 yield Label(f"[dim]{self._hint}[/dim]", id="select-hint")
                 yield Label(id="boost-probe")
@@ -185,16 +187,45 @@ class SelectScreen(ModalScreen[Optional[str]]):
         self._term = term
         items = self._items_factory(self._theme_ctx()) if self._items_factory else self._items
 
-        opts: list = []
+        # 先按“分组标题 → 内容项”切块：标题（disabled 且无 id 的 Option）只属于
+        # 它后面那一组。搜索后某组没有命中项时，标题和它前面的空行一起丢掉。
+        blocks: list[tuple[list, list]] = []
         for item in items:
-            if isinstance(item, Option):
-                opts.append(item)
+            if isinstance(item, Option) and item.id is None:
+                if blocks and blocks[-1][1] and not blocks[-1][0]:
+                    blocks[-1][0].append(item)
+                else:
+                    blocks.append(([item], []))
                 continue
+            if not blocks:
+                blocks.append(([], []))
+            blocks[-1][1].append(item)
 
-            search_text = str(item[3]).lower() if len(item) > 3 and item[3] else str(item[0]).lower()
-            if term and term not in search_text:
+        opts: list = []
+        for headers, entries in blocks:
+            matched: list = []
+            for item in entries:
+                if isinstance(item, Option):
+                    # 可操作项（如“添加”）不参与过滤，搜索时也要能点到
+                    matched.append(item)
+                    continue
+
+                search_text = str(item[3]).lower() if len(item) > 3 and item[3] else str(item[0]).lower()
+                if term and term not in search_text:
+                    continue
+                matched.append(item)
+
+            if not matched:
                 continue
-            opts.append(Option(item[1], id=item[0], disabled=len(item) > 2 and item[2]))
+            opts.extend(headers)
+            for item in matched:
+                if isinstance(item, Option):
+                    opts.append(item)
+                else:
+                    opts.append(Option(item[1], id=item[0], disabled=len(item) > 2 and item[2]))
+
+        if not opts and term and self._empty_text:
+            opts.append(Option(self._empty_text, disabled=True))
 
         options.clear_options()
         options.add_options(opts)

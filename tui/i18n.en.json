@@ -355,6 +355,8 @@
   "失败：": " failed: ",
   "是否将当前会话过户给「": "Hand the current session over to \"",
   "    输入以搜索": "    type to search",
+  "搜索": "Search",
+  "没有匹配的模型": "No matching models",
   "（可用取值：T0~T4 或 `off`）": " (allowed: T0~T4 or `off`)",
   "每日次数": "Daily limit",
   "（可用取值：数字，0 起）": " (allowed: integer from 0)",

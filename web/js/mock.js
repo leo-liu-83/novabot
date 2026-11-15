@@ -233,7 +233,7 @@
   ];
 
   const system = {
-    version: '0.2.1',
+    version: '0.2.2',
     build: '2026.10.23 · local',
     entry: '0.0.0.0:9000',
     modeLabel: '多用户',

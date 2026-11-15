@@ -379,6 +379,39 @@
     m.el.remove();
   }
   U.closeMenu = closeMenu;
+  /* 菜单搜索匹配：忽略大小写与空格/连字符/点/斜杠，
+     让 “deepseek v4” 也能命中 “deepseek-v4.1-flash”。 */
+  U.menuMatch = function (haystack, query) {
+    const norm = (s) => String(s == null ? '' : s).toLowerCase().replace(/[\s._\-\/·]+/g, '');
+    const q = norm(query);
+    return !q || norm(haystack).indexOf(q) > -1;
+  };
+
+  /* 逐项判定可见性；分组标题只在组内有命中项时显示，搜索时隐藏空行。
+     与渲染顺序一一对应，DOM 侧只管按结果套 hidden。 */
+  U.menuVisible = function (items, query) {
+    const visible = [];
+    let group = '';
+    items.forEach((it) => {
+      if (it.group) {
+        group = it.group;
+        visible.push(false);
+        return;
+      }
+      if (it.sep) { visible.push(!query); return; }
+      visible.push(U.menuMatch([it.label, it.hint, it.search, group].filter(Boolean).join(' '), query));
+    });
+    items.forEach((it, i) => {
+      if (!it.group) return;
+      let any = false;
+      for (let j = i + 1; j < items.length && !items[j].group; j += 1) {
+        if (visible[j]) { any = true; break; }
+      }
+      visible[i] = any;
+    });
+    return visible;
+  };
+
   U.menu = function (anchor, items, opts) {
     opts = opts || {};
     closeMenu();
@@ -387,8 +420,15 @@
     el.setAttribute('role', 'menu');
     let html = '';
     if (opts.head) html += '<div class="menu-head">' + U.esc(opts.head) + '</div>';
+    if (opts.search) {
+      html += '<div class="menu-search"><input type="text" class="input" data-menu-search autocomplete="off" spellcheck="false" placeholder="' +
+        U.esc(opts.search) + '"></div>';
+    }
     items.forEach((it, i) => {
-      if (it.group) { html += '<div class="menu-group">' + U.esc(it.group) + '</div>'; return; }
+      if (it.group) {
+        html += '<div class="menu-group">' + U.esc(it.group) + '</div>';
+        return;
+      }
       if (it.sep) { html += '<div class="menu-sep"></div>'; return; }
       html += '<button type="button" class="menu-item ' + (it.active ? 'active' : '') + '" role="menuitem" data-i="' + i + '"' + (it.disabled ? ' disabled' : '') + '>' +
         (it.active ? U.icon('check') : '') +
@@ -396,8 +436,31 @@
         (it.hint ? '<span class="menu-hint">' + U.esc(it.hint) + '</span>' : '') +
         '</button>';
     });
+    if (opts.search) html += '<div class="menu-empty" data-menu-empty hidden>' + U.esc(opts.empty || '') + '</div>';
     el.innerHTML = html;
     document.body.appendChild(el);
+
+    if (opts.search) {
+      const input = el.querySelector('[data-menu-search]');
+      const empty = el.querySelector('[data-menu-empty]');
+      const apply = () => {
+        const q = input.value;
+        const visible = U.menuVisible(items, q);
+        let any = false;
+        el.querySelectorAll('.menu-group, .menu-item, .menu-sep').forEach((node, idx) => {
+          node.hidden = !visible[idx];
+          if (visible[idx] && !items[idx].group && !items[idx].sep) any = true;
+        });
+        if (empty) empty.hidden = any || !q;
+      };
+      input.addEventListener('input', apply);
+      input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        const first = el.querySelector('.menu-item:not([hidden]):not([disabled])');
+        if (first) first.click();
+      });
+      input.focus();
+    }
 
     const r = anchor.getBoundingClientRect();
     const w = el.offsetWidth;

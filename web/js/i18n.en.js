@@ -5,6 +5,8 @@ window.NB_I18N_EN = {
   "生成中，先停止再切换": "Generating; stop before switching",
   "模型 → ": "Model → ",
   "选择模型": "Choose model",
+  "搜索模型": "Search models",
+  "没有匹配的模型": "No matching models",
   "未分组": "Ungrouped",
   "切换思考": "Toggle thinking",
   "还没有管理员": "No administrator yet",

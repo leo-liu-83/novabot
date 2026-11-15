@@ -657,8 +657,11 @@ class CommandMixin(Screen):
     # region 选择弹窗
     def _open_model_picker(self) -> None:
         current = self.current_model()
+        groups = models_by_provider()
+        # 模型多时（聚合平台动辄几百个）才挂搜索框，少模型时不占一行
+        filterable = sum(len(models) for _, _, models in groups) > 8
         items: list = []
-        for idx, (code, name, models) in enumerate(models_by_provider()):
+        for idx, (code, name, models) in enumerate(groups):
             # 8.2.8 OptionList无分组能力：组标题用disabled行（游标自动跳过），provider之间插空行
             if idx > 0:
                 items.append(Option(Text(" "), disabled=True))
@@ -671,9 +674,16 @@ class CommandMixin(Screen):
                     parts = [(m, "bold")]
                 else:
                     parts = [(m, "dim"), (t(t(t("   未配置密钥"))), "red")]
-                items.append((m, Text.assemble(*parts), not usable))
+                # 搜索词同时匹配模型 id 与 provider 显示名，输入 “百炼” 也能找到
+                items.append((m, Text.assemble(*parts), not usable, f"{m} {name}"))
 
-        self.app.push_screen(SelectScreen(t(t(t("选择模型"))), items), self._on_model_picked)
+        hint = t(t(t("↑↓ 选择    Enter 确认    Esc 取消")))
+        if filterable:
+            hint += t(t(t("    输入以搜索")))
+        self.app.push_screen(SelectScreen(
+            t(t(t("选择模型"))), items, filterable=filterable, hint=hint,
+            empty_text=t(t(t("没有匹配的模型"))) if filterable else "",
+        ), self._on_model_picked)
 
     def _on_model_picked(self, value: Optional[str]) -> None:
         if value:

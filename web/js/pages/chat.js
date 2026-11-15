@@ -1542,7 +1542,7 @@
     return groups;
   }
 
-  function openModelMenu(anchor, session) {
+  function modelMenuItems(session) {
     const items = [];
     modelGroups().forEach((group) => {
       items.push({ group: group.name });
@@ -1550,6 +1550,8 @@
         items.push({
           label: m.name,
           hint: m.thinking ? 'thinking' : '',
+          // 搜索同时匹配显示名、模型 id 与 provider，输入 “百炼/qwen” 都能找到
+          search: [m.id, m.provider, m.providerCode].filter(Boolean).join(' '),
           active: session.model === m.id,
           disabled: m.configured === false,
           onPick: () => {
@@ -1563,7 +1565,21 @@
         });
       });
     });
-    U.menu(anchor, items, { head: I.t('选择模型'), align: 'right', className: 'model-menu' });
+    return items;
+  }
+
+  function modelMenuOpts() {
+    const opts = { head: I.t('选择模型'), align: 'right', className: 'model-menu' };
+    // 模型多时（聚合平台动辄几百个）才挂搜索框，少模型时不占一行
+    if (NB.mock.models.length > 8) {
+      opts.search = I.t('搜索模型');
+      opts.empty = I.t('没有匹配的模型');
+    }
+    return opts;
+  }
+
+  function openModelMenu(anchor, session) {
+    U.menu(anchor, modelMenuItems(session), modelMenuOpts());
   }
 
   function toggleThinking(session) {
@@ -1771,6 +1787,8 @@
     resetContextForTest: resetContext,
     resolveInterruptForTest: resolveInterrupt,
     projectBadgeForTest: projectBadge,
+    modelMenuItemsForTest: modelMenuItems,
+    modelMenuOptsForTest: modelMenuOpts,
     composerHTMLForTest: composerHTML,
     interruptHTMLForTest: interruptHTML,
 

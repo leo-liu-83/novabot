@@ -668,6 +668,23 @@ button.chip:hover { border-color: var(--ink); background: var(--input-bg); }
 }
 /* 模型选择器：模型可能很多，限制高度后滚动 */
 .menu.model-menu { max-height: min(420px, calc(100vh - 20px)); }
+/* 菜单内搜索：固定在顶部，长列表滚动时仍可输入 */
+.menu-search {
+  position: sticky;
+  top: -5px;
+  z-index: 2;
+  margin: -5px -5px 5px;
+  padding: 6px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+}
+.menu-search .input { padding: 6px 9px; font-size: 13px; }
+.menu-empty {
+  padding: 14px 9px;
+  color: var(--faint);
+  font-size: 12.5px;
+  text-align: center;
+}
 .menu-head {
   padding: 6px 9px 7px;
   border-bottom: 1px solid var(--line);
@@ -707,6 +724,13 @@ button.chip:hover { border-color: var(--ink); background: var(--input-bg); }
 .menu-item .icon { width: 14px; height: 14px; color: var(--signal); }
 .menu-item.active .menu-label { color: var(--signal-deep); }
 .menu-sep { height: 1px; margin: 5px 0; background: var(--line); }
+/* hidden 属性只是 UA 样式 display:none；.menu-item 的 display:flex 会盖过它，
+   搜索过滤必须显式声明，否则命中的项不会消失 */
+.menu-search[hidden],
+.menu-empty[hidden],
+.menu-group[hidden],
+.menu-item[hidden],
+.menu-sep[hidden] { display: none; }
 
 /* Toast */
 #toast-root {
