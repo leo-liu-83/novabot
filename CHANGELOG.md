@@ -3,6 +3,15 @@
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，规则见 [版本与发布](docs/versioning.md)。
 本文件只记录对外可见的变化；内部开发过程与提交历史不在其中。
 
+## 0.2.1 — 2026-11-15
+
+### 变更
+
+- `project-notes` 增加按项目类型的参考文档：Python 项目按既有工具（uv / poetry / pdm / conda / venv）
+  决定环境与命令，并隔离 NovaBot 自身环境与目标项目依赖
+- 项目会话里的 Python 环境、依赖安装、测试与交付检查有了统一口径；新增项目类型时按
+  `references/<type>.md` 登记即可
+
 ## 0.2.0 — 2026-11-15
 
 ### 新增

@@ -48,6 +48,22 @@ description: Maintain project knowledge for NovaBot project sessions — decide 
 
 任何类型都**不记**：一次性的执行过程、与项目无关的个人偏好（那属于全局记忆）、成段原文或日志、密钥与个人信息。
 
+## 按项目类型参考
+
+通用规则之外，技术栈还有各自的做法。进入项目后先判断类型；命中下表时用 `read_file` 读对应文档，再决定跑什么命令、往 `AGENTS.md` 里记什么。
+
+| 项目类型 | 识别信号 | 参考文档 |
+|---|---|---|
+| Python | `pyproject.toml`、`requirements.txt`、`setup.py`、`Pipfile`、`uv.lock`、`poetry.lock`，或代码以 `.py` 为主 | `references/python.md` |
+
+约定：
+
+- 表里的路径相对技能目录。系统技能读 `/system_skills/project-notes/references/python.md`；
+  共享层或私有层的同名技能，把前缀换成系统提示里列出的技能路径
+- 参考文档按需读取，不要在回复里复述全文
+- 文档与项目现有约定冲突时，以项目为准，并把差异记进 `AGENTS.md`
+- 新增类型时在 `references/` 下加 `<type>.md`，登记到上表；没有对应文档就按通用规则处理，不要自行发明约定
+
 ## 怎么写
 
 1. 先读现有内容，做增量修改，不要整篇重写
