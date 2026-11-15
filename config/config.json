@@ -1,0 +1,18 @@
+{
+    "llm": {
+        "max_input_tokens": 131072
+    },
+    "attachments": {
+        "max_per_message": 5,
+        "max_file_mb": 10,
+        "admin_unlimited": true,
+        "draft_ttl_days": 7
+    },
+    "agent": {
+        "max_steps": 50
+    },
+    "mcp": {
+        "servers": [],
+        "max_user_servers": 3
+    }
+}

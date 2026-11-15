@@ -1,0 +1,21 @@
+deepagents==0.7.19
+langchain==1.4.2
+langchain-core==1.6.5
+langgraph==1.2.12
+langgraph-checkpoint-sqlite==3.1.1
+aiosqlite==0.22.1
+sqlite-vec==0.1.9
+httpx==0.28.1
+pydantic==2.13.5
+pydantic-settings==2.15.0
+fastapi==0.141.1
+python-multipart==0.0.20
+uvicorn==0.54.0
+loguru==0.7.3
+rich==15.0.0
+textual==8.2.8
+PyYAML==6.0.3
+# 文档转 Markdown（E10.4b：PDF/Office 附件的可读内容来源）。Rust 原生绑定，各平台预编译 wheel
+firecrawl-anydoc==0.2.4
+# 发送前压图（附件重复发送治理）：长边 2000 / base64 5 MiB。纯二进制 wheel，多平台可用
+pillow==11.3.0

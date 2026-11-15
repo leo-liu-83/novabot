@@ -1,0 +1,101 @@
+{
+    "models": {
+        "deepseek": {
+            "name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api": "openai-completions",
+            "key": "",
+            "models": [
+                {
+                    "code": "deepseek-flash",
+                    "name": "DeepSeek Flash",
+                    "stream": true,
+                    "enable_thinking": true,
+                    "num_ctx": 131072
+                },
+                {
+                    "code": "deepseek-v4-pro",
+                    "name": "DeepSeek V4 Pro",
+                    "stream": true,
+                    "enable_thinking": true,
+                    "num_ctx": 131072
+                }
+            ]
+        },
+        "opencode-go": {
+            "name": "OpenCode Go",
+            "base_url": "https://opencode.ai/inference/go/openai/v1",
+            "models_url": "https://opencode.ai/inference/go/v1/models",
+            "dynamic_models": true,
+            "api": "openai-completions",
+            "key": "",
+            "headers": {
+                "User-Agent": "NovaBot/1.0",
+                "x-opencode-session": "${session_id}"
+            }
+        },
+        "openrouter": {
+            "name": "OpenRouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api": "openai-completions",
+            "key": "",
+            "headers": {
+                "HTTP-Referer": "https://your.site",
+                "X-OpenRouter-Title": "NovaBot"
+            },
+            "dynamic_models": true
+        },
+        "intranet": {
+            "name": "内网模型",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api": "openai-completions",
+            "key": "",
+            "headers": {
+                "X-Api-Token": "replace-with-your-intranet-token"
+            },
+            "models": [
+                {
+                    "code": "qwen3-32b",
+                    "name": "Qwen3-32B",
+                    "stream": true,
+                    "num_ctx": 131072
+                }
+            ]
+        }
+    },
+    "llm": {
+        "max_input_tokens": 131072
+    },
+    "attachments": {
+        "max_per_message": 5,
+        "max_file_mb": 10,
+        "admin_unlimited": true,
+        "draft_ttl_days": 7
+    },
+    "agent": {
+        "model": "deepseek/deepseek-flash",
+        "max_steps": 50
+    },
+    "exec": {
+        "level": "T2"
+    },
+    "web": {
+        "search": {
+            "enabled": true,
+            "providers": []
+        },
+        "fetch": {
+            "permission": "ask",
+            "url_allowlist": [
+                "docs.python.org",
+                "github.com"
+            ]
+        }
+    },
+    "mcp": {
+        "servers": [],
+        "max_user_servers": 3
+    },
+    "multi_user": false,
+    "remember_login": true
+}
