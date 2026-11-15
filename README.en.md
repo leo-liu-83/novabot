@@ -1,6 +1,6 @@
 # NovaBot
 
-Version: `0.1.1` | [Changelog](CHANGELOG.md)
+Version: `0.2.0` | [Changelog](CHANGELOG.md)
 
 ## 1. Introduction
 

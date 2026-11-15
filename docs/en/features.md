@@ -39,6 +39,11 @@ See [Model configuration](model-config.md).
 | Shared | Public workspace | Everyone |
 | Private | User workspace | Owner or administrator |
 
+Two skills ship with the release: `skill-creator` (create and improve skills) and `project-notes`
+(record project knowledge in `AGENTS.md` and project notes, keeping project details out of global
+memory). Built-in skills are read-only; to change their behaviour, add a skill with the same name
+to your own private layer (the later layer wins).
+
 - Script skills are not loaded until scanned and released
 - Prompt-only skills load by default but can be rejected
 - Release is bound to a content hash; changes require re-review
