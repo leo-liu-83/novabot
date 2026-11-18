@@ -25,6 +25,8 @@ WRITE_CONFIG=0
 MULTI_USER_CHOICE=0
 PROVIDER_BASE_URL=""
 PROVIDER_KEY=""
+MASTER_KEY=""
+MASTER_FP=""
 PROVIDER_MODEL=""
 PROVIDER_CODE=""
 
@@ -373,6 +375,40 @@ provider_code_from_url() {
   printf '%s' "$picked" | tr -c 'a-z0-9_-' '-' | sed -E 's#^-+|-+$##g'
 }
 
+# 把刚写下的明文 key 加密。任何失败都只告警，不让安装挂掉（配置仍是可用的明文）。
+# 主密钥只走环境变量，避免 ps 里看见；非交互安装不自动生成（CI 日志会留下私钥）。
+encrypt_config_keys() {
+  local data_dir out code fp
+  data_dir="$(dirname "$CONFIG_FILE")/data"
+
+  # 没有要加密的 key 就不建主密钥：否则会打印一把"什么都没保护"的私钥，
+  # 用户既不知道该不该存，下次真要加密时又可能已经丢了
+  if [ -z "$PROVIDER_KEY" ] && [ -z "${NOVABOT_MASTER_KEY:-}" ]; then
+    return 0
+  fi
+
+  if [ "$INTERACTIVE" -eq 0 ] && [ -z "${NOVABOT_MASTER_KEY:-}" ]; then
+    ui_warn "未启用密钥加密（非交互安装不生成主密钥）；需要时运行："
+    printf '  %spython -m util.secret_cli init --config "%s" --data-dir "%s"%s\n' \
+      "$C_DIM" "$CONFIG_FILE" "$data_dir" "$C_RESET" >&2
+    return 0
+  fi
+
+  out="$(NOVABOT_MASTER_KEY="${NOVABOT_MASTER_KEY:-$MASTER_KEY}" \
+    "$PY" -m util.secret_cli init --config "$CONFIG_FILE" --data-dir "$data_dir" 2>&1)"
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    ui_warn "密钥加密未完成（配置里的 key 仍是明文）：$out"
+    return 0
+  fi
+
+  # 生成的私钥必须让用户看见（含指纹那行）
+  printf '%s\n' "$out" >&2
+  fp="$(printf '%s\n' "$out" | sed -n 's/.*指纹 \([0-9a-f]\{8\}\).*/\1/p' | tail -n 1)"
+  [ -n "$fp" ] && MASTER_FP="$fp"
+  return 0
+}
+
 # 生成最小用户配置：只写差异，其余默认值来自内置 config/config.json。
 # 值走环境变量传进 Python，避免引号/换行把 JSON 或 shell 弄坏。
 write_config_file() {
@@ -667,6 +703,9 @@ if [ "$INTERACTIVE" -eq 1 ]; then
       PROVIDER_BASE_URL="$(ask "接口地址（如 https://api.deepseek.com，回车跳过）" "")"
       if [ -n "$PROVIDER_BASE_URL" ]; then
         PROVIDER_KEY="$(ask_secret "API Key（输入不回显，可留空）")"
+        if [ -n "$PROVIDER_KEY" ]; then
+          MASTER_KEY="$(ask_secret "主密钥（SM2 私钥 64 位十六进制 / SM4 密钥 32 位，留空自动生成）")"
+        fi
         PROVIDER_MODEL="$(ask "模型 code（如 deepseek-flash；留空则首次启动用 /model 选择）" "")"
         PROVIDER_CODE="$(provider_code_from_url "$PROVIDER_BASE_URL")"
       fi
@@ -685,6 +724,9 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   ui_kv "命令      " "$BIN_DIR/$CMD_NAME"
   if [ "$WRITE_CONFIG" -eq 1 ]; then
     ui_kv "配置文件  " "生成 $CONFIG_FILE（$([ "$MULTI_USER_CHOICE" -eq 1 ] && echo 多用户 || echo 单用户)）"
+    if [ -n "$MASTER_FP" ]; then
+      ui_kv "主密钥    " "已启用加密（指纹 $MASTER_FP）"
+    fi
     if [ -n "$PROVIDER_BASE_URL" ]; then
       ui_kv "模型接口  " "$PROVIDER_BASE_URL（$PROVIDER_CODE${PROVIDER_MODEL:+/$PROVIDER_MODEL}）"
     else
@@ -763,12 +805,18 @@ mv "$tmp_launcher" "$LAUNCHER"
 
 if [ "$WRITE_CONFIG" -eq 1 ]; then
   mkdir -p "$CONFIG_DIR"
+  # 目录与文件权限先收到最紧：加密那一步是之后才做的，
+  # 中间这段明文窗口不该被同机其他用户读到（Windows 走 NTFS 默认 ACL）
+  chmod 700 "$CONFIG_DIR" 2>/dev/null || true
   if [ -f "$CONFIG_FILE" ]; then
     cp -p "$CONFIG_FILE" "$CONFIG_FILE.bak"
+    chmod 600 "$CONFIG_FILE.bak" 2>/dev/null || true
     ui_progress "已备份原配置 $CONFIG_FILE.bak"
   fi
   write_config_file "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
   ui_progress "已生成配置文件 $CONFIG_FILE"
+  encrypt_config_keys
 fi
 
 echo

@@ -9,7 +9,11 @@
         "draft_ttl_days": 7
     },
     "agent": {
-        "max_steps": 50
+        "max_steps": 50,
+        "subagents": {
+            "explore": {"model": ""},
+            "general": {"model": ""}
+        }
     },
     "mcp": {
         "servers": [],

@@ -29,10 +29,10 @@ async def run():
 
 
 async def _chat_loop():
-    console.print(t("[bold]NovaBot[/bold] TUI，输入 /exit 退出，/new 开启新会话，/think on|off|auto 控制深度思考\n"))
+    console.print(t("[bold]NovaBot[/bold] TUI，输入 /exit 退出，/new 开启新会话，/think off|low|medium|high|auto 控制思考档位\n"))
 
     session_id = None
-    enable_thinking: bool | None = None
+    thinking_level: str | None = None
 
     while True:
         query = (await asyncio.to_thread(console.input, t(t(t("[cyan]你 > [/cyan]"))))).strip()
@@ -45,11 +45,13 @@ async def _chat_loop():
             console.print(t(t(t("[dim]已开启新会话[/dim]\n"))))
             continue
         if query.startswith("/think"):
-            enable_thinking = _toggle_thinking(query, enable_thinking)
+            thinking_level = _toggle_thinking(query, thinking_level)
             continue
 
-        input = ChatInputSchema(query=query, session_id=session_id, enable_thinking=enable_thinking)
-        chat_service = ChatService(input=input)
+        input = ChatInputSchema(query=query, session_id=session_id,
+                                thinking_level=thinking_level)
+        # 与 TUI 同理：构造里有模型发现与 agent 编译，放线程里跑，别卡住事件循环
+        chat_service = await asyncio.to_thread(ChatService, input=input)
         session_id = chat_service.session_id
 
         console.print("bot > ", end="")
@@ -57,28 +59,25 @@ async def _chat_loop():
 
         console.print("\n")
 
-# 解析/think命令，on/off为前端强制控制，auto恢复模型定义默认
-def _toggle_thinking(query: str, current: bool | None) -> bool | None:
+# 解析/think命令：off/low/medium/high 为档位，auto 恢复模型默认
+def _toggle_thinking(query: str, current: str | None) -> str | None:
     parts = query.split()
     if len(parts) == 1:
         # 与TUI一致：/think不带参数是"查看当前"，不是隐式开启
-        state = t(t(t("强制开启"))) if current is True else (t(t(t("强制关闭"))) if current is False else t(t(t("跟随模型定义"))))
-        console.print(t(t(t('[dim]深度思考：{}（用法：/think on|off|auto）[/dim]\n')), state))
+        state = current or t("跟随模型定义")
+        console.print(t("[dim]思考档位：{}（用法：/think off|low|medium|high|auto）[/dim]\n",
+                        state))
         return current
 
     arg = parts[1].lower()
-    if arg == "on":
-        console.print(t(t(t("[dim]深度思考：前端强制开启[/dim]\n"))))
-        return True
-    if arg == "off":
-        console.print(t(t(t("[dim]深度思考：前端强制关闭[/dim]\n"))))
-        return False
-    if arg == "auto":
-        console.print(t(t(t("[dim]深度思考：跟随模型定义[/dim]\n"))))
-        return None
+    try:
+        level = normalize_level(arg)
+    except ValueError:
+        console.print(t("[dim]未知的思考档位，可用：off / low / medium / high / auto[/dim]\n"))
+        return current
 
-    console.print(t("[dim]未知的思考模式，可用：on / off / auto[/dim]\n"))
-    return current
+    console.print(t("[dim]思考档位：{}[/dim]\n", level or t("跟随模型定义")))
+    return level
 
 # 打印会话事件，interrupt时进入确认交互并恢复
 async def _print_events(events, chat_service: ChatService):

@@ -17,8 +17,10 @@ from typing import Callable, Optional
 import httpx
 
 from config import config
+from core.llm.thinking import LEVELS, levels_for, normalize_level, resolve_style
 from service.config.dtos import ModelDto, ProviderDto
 from util.request_headers import resolve_runtime_headers
+from util.secrets import is_ciphertext
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +37,59 @@ def _dict(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def is_usable(model_id: str) -> bool:
+    """静态配置能判断的部分：provider 存在、有 key、静态模型在清单里。
+
+    动态发现型 provider 不查模型清单——那要发一次网络请求，而发现结果本来就可能有延迟；
+    真正调用时的错误由模型层报，这里只挡住"模型 id 写错/没配 key"这类必然失败。
+    """
+    provider_code, _, model_code = (model_id or "").partition("/")
+    if not provider_code or not model_code:
+        return False
+    data = config.CONFIG_DATA
+    providers = [p for p in (data.models if data else []) if p.code == provider_code]
+    if not providers:
+        return False
+    provider = providers[-1]  # 与 llm_manager 一致：同 code 取最后一个（用户配置覆盖内置）
+    # 密文说明本机没有主密钥/不匹配：当作"没配 key"，别把它当可用模型，
+    # 更别拿密文去发请求
+    if not provider.api_key or is_ciphertext(provider.api_key):
+        return False
+    if provider.dynamic_models:
+        return True
+    return any(m.code == model_code for m in (provider.models or []))
+
+
+def thinking_options(model_id: str) -> dict:
+    """某个模型可选的思考档位与默认档位；查不到时给通用四档。
+
+    UI 只按这里给的档位画选项：只认开关的端点不该出现"高/中/低"三个看起来一样的档。
+    """
+    provider_code, _, model_code = (model_id or "").partition("/")
+    data = config.CONFIG_DATA
+    for provider in reversed(list(data.models if data and data.models else [])):
+        if provider.code != provider_code:
+            continue
+        model = next((item for item in reversed(list(provider.models or []))
+                      if item.code == model_code), None)
+        # 动态发现型 provider 没有静态模型条目：档位默认只能来自 provider 级配置
+        style = resolve_style(provider.base_url,
+                              (model.thinking_style if model else None)
+                              or getattr(provider, "thinking_style", None))
+        levels = levels_for(style, (model.thinking_levels if model else None)
+                            or getattr(provider, "thinking_levels", None))
+        explicit = normalize_level(getattr(provider, "thinking_default", None))
+        if model is not None:
+            # 静态模型：模型级 > provider 级 > 老字段 enable_thinking
+            default = (normalize_level(model.thinking_default) or explicit
+                       or ("medium" if model.enable_thinking else "off"))
+        else:
+            # 发现出来的模型没有模型级配置：没配 provider 默认就跟随模型自身
+            default = explicit
+        return {"default": default, "levels": list(levels)}
+    return {"default": None, "levels": list(LEVELS)}
+
+
 class ModelCatalog:
     TTL = 300.0
     RETRY_TTL = 60.0
@@ -45,6 +100,8 @@ class ModelCatalog:
         self._lock = threading.RLock()
         # 同 code 的 provider 可能有多份（内置 + 用户覆盖），按 code + 发现地址区分
         self._cache: dict[tuple[str, str], tuple[float, list[ModelDto]]] = {}
+        # 最近一次发现失败的原因：界面据此说清"为什么没有模型"，而不是只展示空列表
+        self._errors: dict[str, str] = {}
 
     def providers(self) -> list[ProviderDto]:
         """返回当前可用 provider；动态 provider 的 models 已合并发现结果。"""
@@ -59,6 +116,11 @@ class ModelCatalog:
             else:
                 providers.append(self._with_discovered_models(provider))
         return providers
+
+    def errors(self) -> dict[str, str]:
+        """provider code → 最近一次模型发现失败的原因（成功一次就清掉）。"""
+        with self._lock:
+            return dict(self._errors)
 
     def invalidate(self, code: Optional[str] = None) -> None:
         with self._lock:
@@ -95,8 +157,10 @@ class ModelCatalog:
             try:
                 models = self._fetcher(provider)
                 ttl = self.TTL
+                self._errors.pop(provider.code, None)
             except Exception as exc:
                 log.warning("模型发现失败 [%s]: %s", provider.code, exc)
+                self._errors[provider.code] = f"{type(exc).__name__}: {exc}"[:200]
                 models = []
                 ttl = self.RETRY_TTL
 
@@ -107,8 +171,10 @@ class ModelCatalog:
         url = self._models_url(provider)
 
         headers = {}
-        if provider.api_key:
+        if provider.api_key and not is_ciphertext(provider.api_key):
             headers["Authorization"] = f"Bearer {provider.api_key}"
+        elif is_ciphertext(provider.api_key):
+            log.warning("模型发现跳过：%s 的 key 是密文（主密钥缺失或不匹配）", provider.code)
         if provider.host:
             headers["Host"] = provider.host
         headers.update(resolve_runtime_headers(provider.headers, None) or {})

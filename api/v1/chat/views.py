@@ -7,6 +7,7 @@
 # @Version     : 1.0
 # @Description :
 
+import asyncio
 import json
 from typing import Any
 
@@ -22,7 +23,8 @@ router = APIRouter(prefix="/chat")
 
 @router.post("/completions", summary="会话")
 async def completions(*, input: ChatInputSchema, ctx: UserCtx = Depends(resolve_user_ctx)) -> Any:
-    chat_service = ChatService(input=input, ctx=ctx)
+    # 构造里有模型发现（HTTP）与 agent 编译：放进线程，避免阻塞事件循环拖慢其他请求
+    chat_service = await asyncio.to_thread(ChatService, input=input, ctx=ctx)
 
     if input.streamable:
         return response_code.resp_200_streaming(_sse(chat_service.astream()))
@@ -33,8 +35,9 @@ async def completions(*, input: ChatInputSchema, ctx: UserCtx = Depends(resolve_
 @router.post("/resume", summary="恢复interrupt会话")
 async def resume(*, input: ChatResumeSchema, ctx: UserCtx = Depends(resolve_user_ctx)) -> Any:
     # 恢复必须沿用原会话绑定的model/thinking，否则模型回退到默认配置
-    chat_service = ChatService(
-        input=ChatInputSchema(
+    chat_service = await asyncio.to_thread(
+        ChatService,
+        ChatInputSchema(
             query="",
             session_id=input.session_id,
             model=input.model,

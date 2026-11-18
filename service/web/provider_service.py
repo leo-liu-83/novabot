@@ -14,8 +14,10 @@ import threading
 import time
 from typing import Optional
 
+from logger import logger
 from config import config
 from service.db_base import SqliteService
+from util.secrets import SecretError, SecretStore
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_web_providers (
@@ -93,6 +95,24 @@ def _validate_endpoint(url: str, *, allow_private: bool = False) -> str:
 
 
 class UserWebProviderService(SqliteService):
+    # ── 密钥加解密 ──────────────────────────────────
+    def _secrets(self) -> SecretStore:
+        """按当前库路径懒建：构造函数里可能还没定 db_path（SqliteService 自己算）。"""
+        store = getattr(self, "_secret_store", None)
+        if store is None or store.db_path != self.db_path:
+            store = self._secret_store = SecretStore(self.db_path)
+        return store
+
+    def _reveal_key(self, value: Optional[str], label: str) -> Optional[str]:
+        """解不开按"没有 key"处理并记日志：绝不把密文拼进请求头。"""
+        if not value:
+            return value
+        try:
+            return self._secrets().reveal(value)
+        except SecretError as exc:
+            logger.warning(f"搜索接口 {label} 的 key 解不开（{exc}），本次按未配置处理")
+            return None
+
     @staticmethod
     def _table_columns(conn: sqlite3.Connection, table: str) -> set:
         return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -138,7 +158,8 @@ class UserWebProviderService(SqliteService):
             "INSERT INTO user_web_providers (uid, provider, api_key, endpoint, extra, enabled, added_at) "
             "VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT(uid, provider) DO UPDATE SET "
             "api_key=excluded.api_key, endpoint=excluded.endpoint, extra=excluded.extra, enabled=1",
-            (uid, name, api_key or None, ep, json.dumps(extra or {}, ensure_ascii=False), int(time.time())),
+            (uid, name, self._secrets().encrypt_if_plain(api_key) or None, ep,
+             json.dumps(extra or {}, ensure_ascii=False), int(time.time())),
         )
 
     def set_enabled(self, uid: str, provider: str, enabled: bool) -> bool:
@@ -162,6 +183,7 @@ class UserWebProviderService(SqliteService):
             return None
 
         row = rows[0]
+        row["api_key"] = self._reveal_key(row.get("api_key"), provider)
         try:
             row["extra"] = json.loads(row["extra"] or "{}")
         except ValueError:
@@ -196,6 +218,7 @@ class UserWebProviderService(SqliteService):
             (uid,),
         )
         for row in rows:
+            row["api_key"] = self._reveal_key(row.get("api_key"), row.get("provider"))
             try:
                 row["extra"] = json.loads(row["extra"] or "{}")
             except ValueError:
@@ -217,6 +240,7 @@ class UserWebProviderService(SqliteService):
             (GLOBAL_SCOPE,),
         )
         for row in rows:
+            row["api_key"] = self._reveal_key(row.get("api_key"), row.get("provider"))
             try:
                 row["extra"] = json.loads(row["extra"] or "{}")
             except ValueError:
@@ -236,12 +260,18 @@ class UserWebProviderService(SqliteService):
         self.remove(GLOBAL_SCOPE, provider)
 
     def list_for(self, uid: str) -> list[dict]:
-        return self._query(
-            "SELECT provider, endpoint, enabled, "
-            "CASE WHEN api_key IS NULL OR api_key = '' THEN 0 ELSE 1 END AS has_key "
+        """列表不返回 key；has_key 按解密结果算——解不开的密文等同"未配置"。"""
+        rows = self._query(
+            "SELECT provider, api_key, endpoint, enabled "
             "FROM user_web_providers WHERE uid = ? ORDER BY provider",
             (uid,),
         )
+        out = []
+        for row in rows:
+            key = self._reveal_key(row.pop("api_key", None), row.get("provider"))
+            row["has_key"] = 1 if key else 0
+            out.append(row)
+        return out
 
     def count_user_providers(self, uids) -> int:
         """给定账号集合内自备 provider 的条目总数。

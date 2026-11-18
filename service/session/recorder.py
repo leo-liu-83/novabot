@@ -42,11 +42,12 @@ class SessionRecorder:
 
     def __init__(self, *, session_id: str, user_id: str = DEFAULT_USER_ID,
                  model: Optional[str] = None, thinking: Optional[bool] = None,
-                 service=None):
+                 thinking_level: Optional[str] = None, service=None):
         self.session_id = session_id
         self.user_id = user_id
         self.model = model
         self.thinking = thinking
+        self.thinking_level = thinking_level
         self.service = service or session_service
         # 落库在事件循环外的线程里执行（锁等待不能堵住 loop）；取消时主流程可能
         # 在线程还没返回时就走到 finish，所以缓冲区也要串行保护。
@@ -155,6 +156,37 @@ class SessionRecorder:
         with self._lock:
             self._observe_event(event)
 
+    def record_subagent_usage(self, *, model: str, agent: str,
+                              input_tokens: int, output_tokens: int,
+                              elapsed: float = 0.0) -> None:
+        """子代理的一次模型调用：只记用量明细与合计，不推进主会话的消息段。
+
+        子代理是主图里的嵌套调用，不会走 usage 事件；它的 token 必须单独记，
+        否则报表与会话合计都会缺一块。主体（消息行）仍由主 agent 的 usage 推进。
+        """
+        if not (input_tokens or output_tokens):
+            return
+        with self._lock:
+            self.service.save_tokens(self.session_id, input_tokens, output_tokens,
+                                     0.0, self.user_id)
+            self._turn["input"] += input_tokens
+            self._turn["output"] += output_tokens
+            self._turn["elapsed"] += elapsed
+
+            target = self._turn_user_row or self.service.last_user_message_id(
+                self.session_id, self.user_id)
+            if target is None:
+                return
+            started = self._turn_started_at
+            if started is None:
+                started = self.service.message_created_at(target, self.user_id) or int(time.time())
+            self.service.record_usage_event(
+                turn_id=str(target), uid=self.user_id, session_id=self.session_id,
+                model=model or "", input_tokens=input_tokens,
+                output_tokens=output_tokens, elapsed=elapsed, created_at=started,
+                agent=agent,
+            )
+
     def _observe_event(self, event: dict) -> None:
         kind = event.get("event")
 
@@ -258,5 +290,6 @@ class SessionRecorder:
             title = seed[:TITLE_MAX]
 
         # 只更新已经签发且仍属当前用户的行；UPSERT 会让"删除已完成、旧请求迟到写入"复活会话。
-        self.service.update_existing(self.session_id, title, self.model, self.thinking, self.user_id)
+        self.service.update_existing(self.session_id, title, self.model, self.thinking,
+                                     self.user_id, thinking_level=self.thinking_level)
     # endregion

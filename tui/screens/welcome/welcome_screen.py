@@ -40,7 +40,7 @@ class WelcomeScreen(CommandMixin, Screen):
         self._cmd_input_id = "main-input"
         # 首页选择的模型/思考作为新会话默认值
         self.model: Optional[str] = None
-        self.enable_thinking: Optional[bool] = None
+        self.thinking_level: Optional[str] = None
         self._notice_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
@@ -90,13 +90,14 @@ class WelcomeScreen(CommandMixin, Screen):
         from ..chat import ChatScreen
         from ..sessions import create_session
 
-        chat = ChatScreen(session=create_session(model=self.model, thinking=self.enable_thinking))
+        chat = ChatScreen(session=create_session(model=self.model,
+                                                thinking_level=self.thinking_level))
         await self.app.push_screen(chat)
         chat.receive_pasted_paths(paths, remainder)
 
     # 首页状态体现在快捷键行左侧：身份 + 模型 + 思考开关（+ 降级标记）
     def _refresh_cmd_status(self) -> None:
-        state = {True: "on", False: "off", None: "auto"}[self.enable_thinking]
+        state = self.thinking_level or "auto"
         who = identity_label(get_current_ctx())
         # 降级标记在首页也要看得见：用户还没进会话就该知道"重启会丢对话"
         degraded = "" if persistence.is_persistent() else t("  [red]⚠ 不持久化[/]")
@@ -111,7 +112,8 @@ class WelcomeScreen(CommandMixin, Screen):
     async def do_new_session(self) -> None:
         from ..chat import ChatScreen
         from ..sessions import create_session
-        self.app.push_screen(ChatScreen(session=create_session(model=self.model, thinking=self.enable_thinking)))
+        self.app.push_screen(ChatScreen(session=create_session(
+            model=self.model, thinking_level=self.thinking_level)))
 
     async def do_switch_session(self, entry: SessionEntry) -> None:
         from ..chat import ChatScreen

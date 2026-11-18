@@ -1,6 +1,6 @@
 # NovaBot
 
-Version: `0.2.2` | [Changelog](CHANGELOG.md)
+Version: `0.3.0` | [Changelog](CHANGELOG.md)
 
 ## 1. Introduction
 
@@ -84,6 +84,7 @@ Uninstall removes the launcher only by default: `./uninstall.sh` (Windows `unins
 | Chat and sessions | Shared sessions, messages and checkpoints; streaming, stop, retry, context compaction |
 | Models | Multiple providers, OpenAI-compatible APIs, dynamic discovery, thinking switch, per-session selection |
 | Multi-user | Anonymous / user / administrator; login, registration, password, account deletion, session handover |
+| Subagents | The main agent can dispatch `explore` (read-only) and `general` (execution); own context, per-role models, usage per role |
 | Projects | Register an existing directory as the working root; project sessions share `AGENTS.md` and project notes, with file access confined to the directory |
 | Skills | System / shared / private layers; script skills are scanned before release; unreleased skills are not loaded |
 | Attachments and multimodal | File paste, path detection, image vision input, PDF/Office conversion, upload limits and draft cleanup |

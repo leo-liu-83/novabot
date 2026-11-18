@@ -90,6 +90,23 @@ Windows 路径以 `%USERPROFILE%\.novabot\` 为根。
 
 完整字段见 [模型配置](model-config.md)。
 
+### 子代理模型
+
+```json
+"agent": {
+    "model": "dashscope/qwen3.5-plus",
+    "subagents": {
+        "explore": {"model": ""},
+        "general": {"model": "dashscope/qwen-flash"}
+    }
+}
+```
+
+- 空串（或整个角色缺省）表示跟随当前会话模型；只写一个角色时，另一个保留内置默认
+- 模型写法与 `agent.model` 一样：`provider/model`，模型 code 自身可含 `/`
+- 不需要手改文件：Web 系统信息页的「子代理模型」面板会即时保存到 `novabot.json`
+- 子代理配置错误不会阻塞主会话：回退到会话模型，并在会话里提示一次
+
 ## 5. 执行档位
 
 ```json
@@ -203,6 +220,51 @@ NOVABOT_LANG=en novabot
 优先级：显式设置（`/lang`） > `NOVABOT_LANG` > `ui.json` > 中文。
 
 Web 语言在顶栏切换；主题存在浏览器 `localStorage`，不影响 TUI。
+
+## 10.5 密钥加密（可选）
+
+模型 provider 的 `key` / `api_key` 与 `web.search.providers[].key` 可以以密文保存：
+
+```json
+"models": {
+  "deepseek": {
+    "key": "enc:v1:sm4:3Jk...（由工具写入，不要手改）"
+  }
+}
+```
+
+- 安装脚本会问一次主密钥（SM2 私钥 64 位十六进制 / SM4 密钥 32 位，留空则生成并打印）；
+  留空自动生成时**务必保存打印出来的私钥**，丢失后只能重填所有 key
+- 已有安装补加密（幂等，只加密明文，不覆盖已有主密钥）：
+
+```bash
+python -m util.secret_cli init --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+```
+
+- 换主密钥用 `init --rotate`（先解旧密文，再用新密钥整体重写；任一条解不开就整体中止）
+- 手写成明文仍然可用；"系统信息"页会显示加密状态、指纹与剩余明文条数
+- 主密钥存在 `~/.novabot/data/novabot.db` 的 `app_secrets` 表；威胁模型与不覆盖范围见
+  [安全](security.md#71-可选的密钥加密)
+
+## 10.6 Web 端项目目录白名单
+
+Web 控制台可能暴露在内网，所以网页里的"登记项目"默认只允许用户 **workspace** 下的目录
+（TUI 是本机操作，不受这条限制）。要登记别处已有的仓库，在 `novabot.json` 里显式放行：
+
+```json
+"projects": {
+    "web_roots": ["~/work", "/srv/repos"]
+}
+```
+
+- Web 的选择器选的是**父目录**：实际项目目录 = `父目录/项目名称`，不存在时创建这个子目录
+  （所以网页可以"新建一个空项目目录"；TUI 仍是登记当前目录）
+- 支持 `~`；workspace 始终允许，不必重复写
+- 只限制 Web 的目录浏览与新建项目；已登记的外部项目照常可用
+- 浏览弹窗与创建接口用同一份白名单，绕不过去；越界会返回
+  `project.path_allowed_roots`
+- 不配置时等价于 `"web_roots": []`（仅 workspace）
 
 ## 11. 生效方式
 

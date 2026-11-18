@@ -496,6 +496,55 @@
 
   /* 目录选择器：逐级浏览，选中当前目录后回填到路径输入框。
      只负责挑路径；可登记性仍由 POST /projects 校验（嵌套、应用数据等）。 */
+  /* 目录展示名：workspace 只显示成 workspace，家目录显示成 ~，别把内部路径铺满弹窗 */
+  let browseMeta = { workspace: '', home: '' };
+
+  function displayPath(path) {
+    const text = String(path || '');
+    const ws = browseMeta.workspace;
+    if (ws && (text === ws || text.startsWith(ws + '/'))) {
+      return 'workspace' + text.slice(ws.length);
+    }
+    const home = browseMeta.home;
+    if (home && home !== '/' && (text === home || text.startsWith(home + '/'))) {
+      return '~' + text.slice(home.length);
+    }
+    return text;
+  }
+
+  /* 输入框里也只显示 workspace / ~，提交前再换回真实路径 */
+  function toRealPath(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    if (text === 'workspace') return browseMeta.workspace || text;
+    if (text.startsWith('workspace/')) {
+      return browseMeta.workspace ? browseMeta.workspace + text.slice('workspace'.length) : text;
+    }
+    return text;
+  }
+
+  function rootLabel(root) {
+    return root === browseMeta.workspace ? 'workspace' : displayPath(root);
+  }
+
+  const MAX_ROOT_TABS = 4;
+
+  function rootTabsHTML(roots, active) {
+    const shown = roots.length > MAX_ROOT_TABS ? roots.slice(0, MAX_ROOT_TABS - 1) : roots;
+    const tabs = shown.map((item) =>
+      '<button type="button" class="tab" role="tab" aria-selected="' + (item === active) +
+        '" data-root-tab="' + U.esc(item) + '" title="' + U.esc(item) + '">' +
+        U.esc(rootLabel(item)) + '</button>').join('');
+    // 当前根被折叠进「更多」时，由「更多」承担选中态，否则界面上看不到任何高亮
+    const hiddenActive = roots.length > MAX_ROOT_TABS && !shown.includes(active);
+    const more = roots.length > MAX_ROOT_TABS
+      ? '<button type="button" class="tab" data-roots-more aria-selected="' + hiddenActive +
+        '" title="' + U.esc(I.t('更多目录')) + '">' +
+        I.t('更多（{n}）', { n: roots.length - MAX_ROOT_TABS + 1 }) + ' ▾</button>'
+      : '';
+    return tabs + more;
+  }
+
   function openDirPicker(start, onPick) {
     let current = '';
     U.modal({
@@ -508,6 +557,7 @@
             U.icon('arrow-up') + I.t('projects.up') + '</button>' +
           '<code class="dir-path" data-dir-path></code>' +
         '</div>' +
+        '<div class="tabs dir-tabs" data-dir-tabs role="tablist"></div>' +
         '<div class="dir-list" data-dir-list></div>' +
       '</div>',
       footer: '<button type="button" class="btn ghost" data-cancel>' + U.esc(I.t('projects.cancel')) + '</button>' +
@@ -515,6 +565,7 @@
       onMount: (wrap, close) => {
         const pathEl = wrap.querySelector('[data-dir-path]');
         const listEl = wrap.querySelector('[data-dir-list]');
+        const rootsEl = wrap.querySelector('[data-dir-tabs]');
         const upBtn = wrap.querySelector('[data-dir-up]');
         let parent = null;
 
@@ -523,8 +574,28 @@
           NB.api.browseProjects(path).then((res) => {
             current = res.path;
             parent = res.parent || null;
-            pathEl.textContent = res.path;
+            browseMeta = { workspace: res.workspace || '', home: res.home || '' };
+            pathEl.textContent = displayPath(res.path);
             upBtn.disabled = !parent;
+            // 白名单有多个根时给 tab 切换；只有一个（默认 workspace）就不占地方
+            const roots = res.roots || [];
+            if (rootsEl) {
+              rootsEl.innerHTML = roots.length > 1 ? rootTabsHTML(roots, res.root) : '';
+              rootsEl.querySelectorAll('[data-root-tab]').forEach((el) => {
+                el.onclick = () => load(el.dataset.rootTab);
+              });
+              const moreBtn = rootsEl.querySelector('[data-roots-more]');
+              if (moreBtn) {
+                moreBtn.onclick = () => {
+                  const rest = roots.slice(MAX_ROOT_TABS - 1);
+                  U.menu(moreBtn, rest.map((item) => ({
+                    label: rootLabel(item),
+                    active: item === res.root,
+                    onPick: () => load(item),
+                  })), { align: 'left', head: I.t('更多目录') });
+                };
+              }
+            }
             listEl.innerHTML = (res.dirs || []).length
               ? res.dirs.map((d) =>
                 '<button type="button" class="dir-row" data-dir="' + U.esc(d.path) + '">' +
@@ -566,29 +637,49 @@
         I.t('<div class="field"><label for="pj-desc">项目描述</label>') +
           '<textarea class="input" id="pj-desc" rows="3" maxlength="500" placeholder="' + U.esc(I.t('projects.descriptionPlaceholder')) + '"></textarea>' +
           I.t('<span class="hint">可留空；用于在项目列表里说明这个项目做什么。</span></div>') +
-        I.t('<div class="field"><label for="pj-path">项目目录</label>') +
+        I.t('<div class="field"><label for="pj-root">项目根目录</label>') +
           '<div class="input-group">' +
-            '<input class="input mono" id="pj-path" autocomplete="off" placeholder="' + U.esc(I.t('projects.pathPlaceholder')) + '">' +
+            '<input class="input mono" id="pj-root" autocomplete="off" placeholder="' + U.esc(I.t('projects.rootPlaceholder')) + '">' +
             '<button type="button" class="btn ghost" data-browse>' + U.icon('folder') + I.t('projects.browse') + '</button>' +
           '</div>' +
-          I.t('<span class="hint">必须是你本机已存在的目录；支持 ~。NovaBot 不会创建、移动或删除该目录。</span></div>') +
+          I.t('<span class="hint">选择一个已存在的根目录；实际项目目录 = 根目录 + 项目名称，不存在时会创建这个子目录。</span>') +
+          I.t('<div class="dir-preview">项目目录：<code data-final-path></code></div></div>') +
         I.t('<div class="banner steel">') + U.icon('shield') +
           I.t('<div>登记后在项目里开新会话，文件读写以该目录为项目边界；项目外的访问需要确认。</div></div>') +
       '</div>',
       footer: I.t('<button type="button" class="btn ghost" data-cancel>取消</button>') +
         '<button type="button" class="btn signal" data-save>' + I.t('projects.create') + '</button>',
       onMount: (wrap, close) => {
-        const pathInput = wrap.querySelector('#pj-path');
+        const nameInput = wrap.querySelector('#pj-name');
+        const rootInput = wrap.querySelector('#pj-root');
+        const finalEl = wrap.querySelector('[data-final-path]');
+        const syncFinal = () => {
+          const name = nameInput.value.trim();
+          const root = rootInput.value.trim().replace(/\/+$/, '');
+          finalEl.textContent = root
+            ? root + '/' + (name || I.t('projects.namePlaceholder'))
+            : I.t('先选根目录');
+        };
+        nameInput.oninput = syncFinal;
+        rootInput.oninput = syncFinal;
+        syncFinal();
+        // 先拿一次 workspace 路径，输入框里显示 "workspace" 时提交才能换回真实路径
+        NB.api.browseProjects('').then((res) => {
+          browseMeta = { workspace: res.workspace || '', home: res.home || '' };
+        }).catch(() => {});
         wrap.querySelector('[data-browse]').onclick = () => {
-          openDirPicker(pathInput.value.trim(), (picked) => { pathInput.value = picked; });
+          openDirPicker(toRealPath(rootInput.value), (picked) => {
+            rootInput.value = displayPath(picked);
+            syncFinal();
+          });
         };
         wrap.querySelector('[data-cancel]').onclick = close;
         wrap.querySelector('[data-save]').onclick = () => {
-          const name = wrap.querySelector('#pj-name').value.trim();
-          const path = pathInput.value.trim();
+          const name = nameInput.value.trim();
+          const root = toRealPath(rootInput.value);
           const description = wrap.querySelector('#pj-desc').value.trim();
-          if (!name || !path) { U.toast(I.t('projects.needNameAndPath'), 'bad'); return; }
-          NB.api.createProject({ name, path, description }).then((row) => {
+          if (!name || !root) { U.toast(I.t('projects.needNameAndPath'), 'bad'); return; }
+          NB.api.createProject({ name, parent: root, description }).then((row) => {
             close();
             U.toast(I.t('projects.created', { name: row.name }));
             reload(true);
@@ -651,11 +742,11 @@
   }
 
   function openProjectSession(projectId) {
-    NB.api.createSession(undefined, NB.mock.ui.defaultThinking, projectId).then((created) => {
+    NB.api.createSession(undefined, NB.mock.ui.defaultThinkingLevel, projectId).then((created) => {
       if (NB.pages.chat && NB.pages.chat.discardDraft) NB.pages.chat.discardDraft();
       NB.mock.sessions.unshift({
         id: created.id, title: created.title || I.t('chat.new'), model: created.model || null,
-        thinking: created.thinking, level: created.exec_level || NB.mock.ui.defaultLevel,
+        thinkingLevel: created.thinking_level, level: created.exec_level || NB.mock.ui.defaultLevel,
         projectId: created.project_id || projectId, projectName: created.project_name || projectName(projectId),
         projectPath: created.project_path || null,
         updatedAt: new Date().toISOString(), tokensIn: 0, tokensOut: 0, speed: 0,
@@ -677,6 +768,10 @@
     skillToggleAllForTest: toggleSkillAll,
     agentsTemplateForTest: () => AGENTS_TEMPLATE,
     agentsDraftEligibleForTest: canDraftAgents,
+    rootTabsForTest: rootTabsHTML,
+    displayPathForTest: displayPath,
+    toRealPathForTest: toRealPath,
+    setBrowseMetaForTest: (meta) => { browseMeta = { workspace: '', home: '', ...(meta || {}) }; },
 
     render() {
       const can = NB.app.canProjects && NB.app.canProjects();

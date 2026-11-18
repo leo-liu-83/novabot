@@ -10,8 +10,10 @@
 from typing import Optional
 
 from config import config
+from core.llm.thinking import AUTO, normalize_level
+from util.secrets import is_ciphertext
 from enums import ModelApiTypeEnum
-from exception.model_exception import ModelPropError
+from exception.model_exception import ModelCallError, ModelPropError
 from core.llm.http.openai import HttpOpenAi
 from service.model_catalog import model_catalog
 from util.request_headers import add_provider_session_header, resolve_runtime_headers
@@ -22,10 +24,17 @@ class LlmManager:
         # 模型定义缓存，key为provider/model
         self.model_defs: dict[str, dict] = {}
 
-    # 获取LLM实例，model格式为provider/model，enable_thinking为None时取模型定义配置
-    def get_llm(self, model: str, enable_thinking: Optional[bool]=None,
+    # 获取LLM实例，model格式为provider/model。
+    # thinking 接受档位（off/low/medium/high）或老的布尔值；None = 用模型定义的默认档位
+    def get_llm(self, model: str, thinking=None,
                 session_id: Optional[str]=None) -> HttpOpenAi:
         model_def = self._get_model_define(model)
+
+        if is_ciphertext(model_def.get("api_key")):
+            raise ModelCallError(
+                f"模型 {model} 的密钥无法解密：本机主密钥缺失或与配置不匹配。"
+                "请补回原主密钥，或重新填写该 provider 的 key"
+                "（python -m util.secret_cli status 可查看状态）")
 
         api = model_def["api"] or ModelApiTypeEnum.OPENAI.value
         if api == ModelApiTypeEnum.OPENAI.value:
@@ -33,8 +42,9 @@ class LlmManager:
         else:
             raise ModelPropError(f"暂不支持的模型接口类型: {api}")
 
-        if enable_thinking is not None:
-            llm.enable_thinking = enable_thinking
+        level = normalize_level(thinking)
+        if level is not None:
+            llm.thinking_level = level
 
         return llm
 
@@ -56,7 +66,9 @@ class LlmManager:
             model=model_def["code"],
             headers=headers,
             enable_thinking=model_def["enable_thinking"],
+            thinking_level=model_def.get("thinking_level"),
             thinking_style=model_def.get("thinking_style"),
+            thinking_off_value=model_def.get("thinking_off_value"),
             max_output_tokens=model_def.get("max_output_tokens"),
             max_input_tokens=max_input_tokens
         )
@@ -117,7 +129,16 @@ class LlmManager:
             "name": provider_model.name,
             "stream": provider_model.stream,
             "enable_thinking": provider_model.enable_thinking,
-            "thinking_style": getattr(provider_model, "thinking_style", None),
+            # 档位默认值：模型级 > provider 级 > 老字段 enable_thinking。
+            # 动态发现出来的模型没有"默认档位"这回事：auto 表示不覆盖，
+            # 别替它决定（把默认从"开"改成"关"是行为事故）
+            "thinking_level": _default_level(provider, provider_model),
+            "thinking_levels": (getattr(provider_model, "thinking_levels", None)
+                                or getattr(provider, "thinking_levels", None)),
+            "thinking_off_value": (getattr(provider_model, "thinking_off_value", None)
+                                   or getattr(provider, "thinking_off_value", None)),
+            "thinking_style": (getattr(provider_model, "thinking_style", None)
+                               or getattr(provider, "thinking_style", None)),
             "num_ctx": provider_model.num_ctx,
             "max_output_tokens": getattr(provider_model, "max_output_tokens", None),
             "cost": {
@@ -130,5 +151,15 @@ class LlmManager:
 
         self.model_defs[model] = model_def
         return model_def
+
+def _default_level(provider, model):
+    explicit = (getattr(model, "thinking_default", None)
+                or getattr(provider, "thinking_default", None))
+    if explicit:
+        return normalize_level(explicit) or AUTO
+    if getattr(provider, "dynamic_models", False):
+        return AUTO
+    return "medium" if model.enable_thinking else "off"
+
 
 llm_manager = LlmManager()

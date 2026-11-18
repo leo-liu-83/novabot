@@ -25,6 +25,26 @@ log_file = f"{config.APP_LOG_NAME}.log" if hasattr(config, "APP_LOG_NAME") and c
 log_enqueue = True
 
 log_full_path = os.path.join(log_path, log_file)
-logger.add(log_full_path, rotation=log_rotation, retention=log_retention, enqueue=log_enqueue)
+# level 必须传：loguru 的 file sink 默认是 DEBUG，配置里的 APP_LOG_LEVEL 就成了摆设
+logger.add(log_full_path, rotation=log_rotation, retention=log_retention,
+           level=log_level, enqueue=log_enqueue)
 
-__all__ = ["logger"]
+# loguru 导入时会自带一个写 stderr 的彩色 sink。TUI 全屏接管终端后它仍在，
+# 每条日志都会在边框两侧漏出一小段彩色文字，还会打断 Textual 的整屏重绘（看着像卡顿）。
+CONSOLE_SINK_ID = 0
+
+
+def silence_console() -> bool:
+    """摘掉 loguru 自带的 stderr sink；全屏 TUI 启动前调用。
+
+    返回是否真的摘掉了。重复调用安全（第二次起返回 False）。
+    文件 sink 不受影响——日志只是不再往终端吐。
+    """
+    try:
+        logger.remove(CONSOLE_SINK_ID)
+        return True
+    except ValueError:
+        return False
+
+
+__all__ = ["logger", "silence_console", "CONSOLE_SINK_ID"]

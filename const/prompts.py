@@ -98,6 +98,63 @@ USER_PROMPT_SECTION: str = """
 """
 
 
+# 子代理分派原则：主代理看得到 task 工具与两个角色，这里只写"什么时候派、什么时候别派"
+SUBAGENT_DISPATCH_RULES: str = """
+## 子代理分派
+
+你可以用 `task` 把工作交给子代理，它们在独立上下文里运行，只把结论带回来。
+判断看「要读几个文件、要不要动手改」，不看问题长短。
+
+- 已经知道确切文件、或只需改一处：自己做，不要派子代理
+- 不知道代码在哪、要 grep/glob 找、预计要读 3 个以上文件或跨 2 个以上目录：
+  先派 `explore`，不要自己一轮轮读——文件内容会占满主上下文
+- 需要查网页资料（官方文档、库用法、报错含义）：派 `explore`
+- 方案已明确、需要改代码或执行命令：派 `general`（写操作仍按执行档位确认）
+- 先探索再执行：先用 `explore` 拿事实，把它的结论连同任务一起交给 `general`
+- 子代理返回的是线索不是结论：核对它给的路径与命令输出，再决定下一步
+- 不要在同一个任务上重复派同类子代理；结果不够就自己补读
+"""
+
+
+# 子代理自己的系统提示词：只加角色约束，不注入人格、记忆与用户偏好
+SUBAGENT_PROMPTS: dict[str, str] = {
+    "explore": """
+## 你的角色：探索子代理（只读）
+
+你负责把事实查清楚，不负责改代码。
+
+- 只能读文件、搜索、看网页；不能写文件、不能执行命令
+- 输出格式：结论 → 证据（文件路径 + 行号 / 命令输出片段）→ 未解决项
+- 不要复述大段代码，只引用定位所需的最少片段
+- 没找到就明确说没找到，不要猜
+""",
+    "general": """
+## 你的角色：执行子代理
+
+你负责把已经明确的方案落地。
+
+- 你会拿到一个具体任务，不需要重新规划整体方案
+- 改完要说明改了什么、怎么验证的（命令与结果）、还剩什么没做
+- 遇到需要用户拍板的取舍，先把能做的做完，再把问题带回去
+- 你不能再分派子代理
+""",
+}
+
+
+def build_subagent_prompt(role: str, project_block: str = "") -> str:
+    """子代理的提示词：核心规范 + 角色约束（+ 项目段）。
+
+    不注入人格、SOUL/USER、长期记忆与用户指令：子代理只做任务，成本与上下文都要收住。
+    """
+    parts = [current_date_line() + "\n\n", CORE_SYSTEM_PROMPT]
+    if project_block:
+        parts.append(project_block)
+    role_prompt = SUBAGENT_PROMPTS.get(role, "")
+    if role_prompt:
+        parts.append(role_prompt)
+    return "".join(parts)
+
+
 # 长期记忆段：仅登录用户注入。承载记忆规则 + core.md 内容（常驻的那一份）
 MEMORY_SECTION: str = """
 ## 长期记忆
@@ -201,6 +258,11 @@ def _project_block(project: ProjectSection) -> str:
     )
 
 
+def render_project_block(project: ProjectSection) -> str:
+    """把项目段渲染成文本；主提示词与子代理提示词共用同一份渲染。"""
+    return _project_block(project)
+
+
 def build_system_prompt(user_prompt: str | None = None, soul: str | None = None, profile: str | None = None, enable_persona: bool = True, enable_memory: bool = False, memory_core: str | None = None, project: ProjectSection | None = None) -> str:
     """组装核心提示词 + 缺失引导段 + 个性化段（SOUL/USER）+ 记忆段 + 用户指令段；缺失的部分整段省略
 
@@ -211,7 +273,7 @@ def build_system_prompt(user_prompt: str | None = None, soul: str | None = None,
 
     当前日期注入在parts起点，因此default档的提前返回路径同样覆盖。
     """
-    parts = [current_date_line() + "\n\n", CORE_SYSTEM_PROMPT]
+    parts = [current_date_line() + "\n\n", CORE_SYSTEM_PROMPT, SUBAGENT_DISPATCH_RULES]
 
     prompt_t = (user_prompt or "").strip()
 

@@ -54,6 +54,67 @@
     }).join('');
   }
 
+  // 子代理模型：第一项是"跟随会话模型"（空串），其余按 provider 分组
+  function subagentModelOptions(selected) {
+    const byProvider = {};
+    (NB.mock.models || []).forEach((m) => {
+      (byProvider[m.provider] = byProvider[m.provider] || []).push(m);
+    });
+    return Object.keys(byProvider).map((provider) =>
+      '<optgroup label="' + U.esc(provider) + '">' +
+        byProvider[provider].map((m) =>
+          '<option value="' + U.esc(m.id) + '"' + (m.id === selected ? ' selected' : '') + '>' +
+            U.esc(m.name || m.id) + '</option>').join('') +
+      '</optgroup>').join('');
+  }
+
+  /* 密钥加密状态行：没有主密钥/有解不开的 key 都要说出来，不能只在文档里 */
+  function secretsLineHTML() {
+    const state = NB.mock.secrets;
+    if (!state) return '';
+    let text;
+    let warn = false;
+    if (!state.enabled) {
+      text = I.t('密钥加密：未启用（本机没有主密钥，配置里的 key 仍是明文）');
+    } else if (state.undecryptable > 0) {
+      warn = true;
+      text = I.t('密钥加密：{algo} · 指纹 {fp} · 有 {n} 条 key 解不开（主密钥缺失或不匹配，请重新填写）',
+        { algo: state.algo, fp: state.fingerprint, n: state.undecryptable });
+    } else {
+      text = I.t('密钥加密：{algo} · 指纹 {fp} · 明文 {plain} 条',
+        { algo: state.algo, fp: state.fingerprint, plain: state.plaintext });
+    }
+    return '<div class="secrets-line' + (warn ? ' warn' : '') + '">' +
+      U.icon(warn ? 'alert' : 'lock') + '<span>' + U.esc(text) + '</span></div>';
+  }
+
+  function subagentRowsHTML() {
+    const rows = NB.mock.subagents || [];
+    const defaultModel = (NB.app && NB.app.defaultModel)
+      || (NB.mock.ui && NB.mock.ui.defaultModel) || '';
+    if (!rows.length) {
+      return '<tr><td colspan="3" class="model-empty">' + I.t('暂无子代理') + '</td></tr>';
+    }
+    return rows.map((row) =>
+      '<tr data-subagent-row="' + U.esc(row.role) + '">' +
+        '<td>' + U.esc(row.title) + '</td>' +
+        '<td class="muted">' + U.esc(row.description) + '</td>' +
+        '<td><select class="input subagent-select" data-subagent-model="' + U.esc(row.role) + '">' +
+          '<option value=""' + (row.model ? '' : ' selected') + '>' + I.t('跟随会话模型') + '</option>' +
+          subagentModelOptions(row.model) +
+        '</select>' +
+        '<div class="muted subagent-fallback">' +
+          U.esc(I.t('未指定时使用默认模型：{model}', { model: row.fallback_model || defaultModel })) +
+        '</div></td>' +
+      '</tr>').join('');
+  }
+
+  function paintSubagents(root) {
+    const tbody = root.querySelector('#subagent-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = subagentRowsHTML();
+  }
+
   function modelPagerInnerHTML(page, pages, total) {
     return '<span class="pager-info mono-xs">' +
         I.t('第 {page} / {total} 页 · 共 {count} 个模型', {
@@ -466,7 +527,7 @@
       return '<div class="system-page">' +
         '<div class="page-head">' +
           I.t('<div><div class="kicker">管理 / SYSTEM</div><h2 class="page-title">系统信息</h2>') +
-            I.t('<p class="page-desc">诊断视图。默认模型可在「模型目录」直接切换并写入 novabot.json；其余值只读。</p></div>') +
+            I.t('<p class="page-desc">诊断视图。默认模型与子代理模型可直接切换并写入 novabot.json；其余值只读。</p></div>') +
         '</div>' +
 
         '<div class="system-grid">' +
@@ -529,6 +590,24 @@
           '</section>' +
         '</div>' +
 
+        '<div id="secrets-line">' + secretsLineHTML() + '</div>' +
+
+        '<section class="panel">' +
+          '<div class="panel-head">' +
+            '<div class="panel-title">' + U.icon('cpu') + I.t('子代理模型</div>') +
+            '<span class="kicker">SUBAGENTS</span>' +
+          '</div>' +
+          '<div class="panel-body subagent-body">' +
+            '<div class="table-wrap"><table class="table subagent-table"><thead><tr>' +
+              I.t('<th>角色</th><th>适用任务</th><th>模型</th>') +
+            '</tr></thead><tbody id="subagent-tbody">' + subagentRowsHTML() + '</tbody></table></div>' +
+            // 说明放在表格下方：先看配置，再看解释；视觉上对齐系统页其它提示条
+            '<div class="banner steel subagent-hint">' + U.icon('layers') +
+              '<div>' + U.esc(I.t('未指定模型时跟随默认模型；子代理在独立上下文里运行，只把结论带回来。')) + '</div>' +
+            '</div>' +
+          '</div>' +
+        '</section>' +
+
         '<section class="panel">' +
           '<div class="panel-head system-model-head">' +
             '<div class="panel-title">' + U.icon('cpu') + I.t('模型目录</div>') +
@@ -576,6 +655,37 @@
           paintModelCatalog(root);
         });
       }
+      // 子代理模型：拉一次角色配置；保存走 PUT，成功后按服务端返回刷新该行
+      NB.api.models().then((result) => {
+        mock.subagents = (result && result.subagents) || [];
+        mock.secrets = (result && result.secrets) || null;
+        paintSubagents(root);
+        const secretsSlot = root.querySelector('#secrets-line');
+        if (secretsSlot) secretsSlot.innerHTML = secretsLineHTML();
+      }).catch(() => { /* 面板留空态，不影响模型目录 */ });
+
+      const subagentBody = root.querySelector('#subagent-tbody');
+      if (subagentBody) {
+        subagentBody.addEventListener('change', (event) => {
+          const select = event.target.closest && event.target.closest('[data-subagent-model]');
+          if (!select) return;
+          const role = select.dataset.subagentModel;
+          const value = select.value;
+          const previous = (mock.subagents || []).find((row) => row.role === role);
+          select.disabled = true;
+          NB.api.setSubagentModel(role, value).then((row) => {
+            const list = mock.subagents || [];
+            const index = list.findIndex((item) => item.role === role);
+            if (index >= 0 && row) list[index] = row;
+            paintSubagents(root);
+            U.toast(I.t('已保存'));
+          }).catch((error) => {
+            if (previous) select.value = previous.model || '';
+            U.toast(error.message || I.t('error.network'), 'bad');
+          }).finally(() => { select.disabled = false; });
+        });
+      }
+
       // 设为默认：委托挂在 tbody 上，重绘只换 innerHTML，监听不会丢
       const tbody = root.querySelector('#system-model-tbody');
       if (tbody) {
@@ -590,7 +700,7 @@
             NB.app.defaultModel = next;
             mock.ui.defaultModel = next;
             const chosen = (mock.models || []).find((m) => m.id === next);
-            if (chosen) mock.ui.defaultThinking = !!chosen.thinking;
+            if (chosen) mock.ui.defaultThinkingLevel = chosen.thinkingDefault;
             paintModelCatalog(root);
             U.toast(I.t('已将 {model} 设为默认模型', { model: next }), 'ok');
           }).catch((error) => {

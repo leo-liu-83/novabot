@@ -79,6 +79,9 @@ base_url + /chat/completions
 
 ---
 
+> provider 的 `key` / `api_key` 可以是密文（`enc:v1:sm4:...`），读取时自动解密；
+> 手写成明文同样可用。加密与主密钥的用法见[配置说明 §10.5](configuration.md#105-密钥加密可选)。
+
 ## 4. 模型字段
 
 `models` 是数组，每一项是一个模型：
@@ -279,35 +282,74 @@ models_url: https://opencode.ai/inference/v1/models
 
 ---
 
-## 8. 思考开关写法
+## 8. 思考档位与写法
 
-不同端点关闭思考的参数名不同，发错通常不会报错，只会被静默忽略。
+2026 年起，多数模型不再有"关思考"这个硬开关，而是档位：OpenAI 的
+`reasoning_effort`、Gemini 3 的 `thinking_level`、DeepSeek 的 effort 与
+`thinking.type`。NovaBot 把它们统一成四档 **off / low / medium / high**，
+再加一个会话级的 `auto`（不覆盖，跟随模型默认）。
 
-| 端点 | 实际生效的写法 |
-|---|---|
-| DashScope / Qwen 等 | 顶层 `enable_thinking` |
-| DeepSeek | `thinking: {"type": "enabled"/"disabled"}` |
-| llama-server | 顶层 `enable_thinking` + `chat_template_kwargs.enable_thinking` |
-
-默认按 `base_url` 自动识别。网关把 DeepSeek 转发到别的域名时，可以显式指定：
+### 8.1 模型级配置
 
 ```json
-{ "code": "deepseek-flash", "thinking_style": "thinking_type" }
+{
+  "code": "gpt-5.1",
+  "name": "GPT-5.1",
+  "thinking_style": "reasoning_effort",
+  "thinking_default": "medium",
+  "thinking_levels": ["off", "low", "medium", "high"],
+  "thinking_off_value": "none"
+}
 ```
 
-可用值：
+| 字段 | 作用 |
+|---|---|
+| `thinking_style` | 请求写法（见下表）；`+` 可组合，如 `thinking_type+reasoning_effort` |
+| `thinking_default` | 模型默认档位；不填时由老字段 `enable_thinking` 推（true=medium、false=off） |
+| `thinking_levels` | 该模型接受的档位，`/think` 与 Web 只按它画选项；不填时按写法推断 |
+| `thinking_off_value` | off 在"没有关这个值"的端点发什么：effort 默认 `none`，`thinking_level` 默认 `minimal` |
 
-```text
-enable_thinking
-thinking_type
-template_kwargs
-enable_thinking+template_kwargs
-enable_thinking+thinking_type
+老字段 `enable_thinking` 仍可用（等价于 `thinking_default` 的 true=medium / false=off）。
+
+### 8.2 各端点写法
+
+| 端点 | `thinking_style` | 关掉时实际发的字段 |
+|---|---|---|
+| OpenAI GPT-5.x / o 系列 | `reasoning_effort` | `reasoning_effort: "none"`（老推理模型可改 `thinking_off_value: "minimal"`） |
+| OpenCode 网关（opencode.ai） | `reasoning_effort`（自动识别） | `reasoning_effort: "none"` |
+| DeepSeek | `thinking_type`（想要档位写 `thinking_type+reasoning_effort`） | `thinking: {"type": "disabled"}` |
+| Gemini 3（原生/网关） | `thinking_level` | `thinking_level: "minimal"` |
+| Qwen / DashScope | `enable_thinking` | `enable_thinking: false` |
+| llama-server | `template_kwargs`（或 `enable_thinking+template_kwargs`） | `chat_template_kwargs.enable_thinking: false` |
+| 只认自家参数、不接受思考字段 | `none` | 一个字段都不发 |
+
+不写 `thinking_style` 时按 `base_url` 猜：`api.openai.com` / `opencode.ai` → `reasoning_effort`，
+`deepseek.com` → `thinking_type`，**回环地址**（`127.0.0.1` / `localhost` / `[::1]` / `unix://`）
+→ `enable_thinking+template_kwargs`，其余（包括局域网 IP 和远程网关）按顶层 `enable_thinking`。
+猜错不会报错，只会被端点静默忽略——所以从网关或局域网推理服务接入时，**显式写
+`thinking_style`**：
+
+```json
+"myvllm": {
+  "base_url": "http://192.168.10.5:8000/v1",
+  "dynamic_models": true,
+  "thinking_style": "enable_thinking+template_kwargs"
+}
 ```
 
-拼错会在装配模型时直接报错。
+这是常见坑：vLLM / SGLang / llama.cpp 上跑的 Qwen 只认
+`chat_template_kwargs.enable_thinking`，但服务跑在 `192.168.x.x` 时不会被自动识别成"本地"，
+结果发的顶层参数被静默忽略、思考开关看起来没生效。
 
----
+### 8.3 关不掉思考的模型
+
+Gemini 3 Pro、Claude 5.x 这类模型只有档位、没有关闭开关：
+
+- 把 `thinking_levels` 写成 `["low", "medium", "high"]`，界面上就不会出现 off；
+- 或保留 off 但设 `thinking_off_value: "minimal"` —— 语义上是"最低档"，而不是真的关掉。
+
+会话里用 `/think` 切换（TUI），Web 端点头部的 `think` 芯片选择。切换只影响之后
+的请求；`show_thinking=false` 只控制是否回显思考内容，不改变请求档位。
 
 ## 9. 动态模型列表
 
@@ -424,3 +466,24 @@ intranet/qwen3-32b
 - 不要把该文件提交进仓库
 - 不要把带密钥的配置贴到 issue、聊天记录或截图里
 - 内网 token 和模型 key 一样，按敏感信息处理
+
+---
+
+## 13. 子代理模型
+
+子代理有两个内置角色，可以各配一个模型：
+
+```json
+"agent": {
+    "subagents": {
+        "explore": {"model": "dashscope/qwen-flash"},
+        "general": {"model": ""}
+    }
+}
+```
+
+- `""` 或缺少该角色：跟随当前会话模型（`/model` 选什么就用什么）
+- 角色模型不继承会话的 `/think` 开关，按模型定义自己的 `enable_thinking`
+- 建议：`explore` 配便宜、快、上下文大的模型（它只读、调用频繁）；`general` 跟随会话模型或配同级别模型
+- 配置的模型不存在或缺 key 时：回退到会话模型，并在会话里提示一次，不会让对话失败
+- Web 端在「系统信息 → 子代理模型」里可以直接选，写入 `novabot.json`

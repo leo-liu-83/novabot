@@ -9,6 +9,7 @@
 
 import json
 import re
+import time
 import httpx
 
 from pydantic import field_validator
@@ -26,6 +27,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from logger import logger
 from util.text_utils import THINK_OPEN, THINK_CLOSE
+from .chunk import _create_usage_metadata
 from exception.model_exception import (
     ModelCallError, ModelPromptError, ModelPropError, ModelUnsupportedContentError,
 )
@@ -57,21 +59,10 @@ def _safe_response_text(response: httpx.Response) -> str:
         return ""
 
 
-# 显式配置的关闭思考写法。拼错时必须在装配期就报错：
+# 请求写法与档位的翻译都在 core/llm/thinking.py：拼错必须在装配期报错，
 # 静默忽略等于"用户以为关了，其实还在烧 token 思考"。
-THINKING_STYLES = frozenset({
-    "enable_thinking", "thinking_type", "template_kwargs",
-    "enable_thinking+template_kwargs", "enable_thinking+thinking_type",
-})
-
-
-def normalize_thinking_style(style: str) -> str:
-    key = "+".join(sorted(part.strip() for part in str(style or "").split("+") if part.strip()))
-    if key not in THINKING_STYLES:
-        raise ModelPropError(
-            f"未知的 thinking_style: {style!r}；可用：{', '.join(sorted(THINKING_STYLES))}"
-        )
-    return key
+from core.llm.thinking import (AUTO, build_fields, is_auto, normalize_level,
+                               normalize_style, resolve_style)
 
 
 def _raise_model_error(exc: httpx.HTTPError) -> None:
@@ -101,12 +92,20 @@ class HttpOpenAi(BaseChatModel):
     url: str # 调用接口
     model: str # 模型名称
     headers: Optional[dict] = None # 模型额外请求headers
-    enable_thinking: bool = False # 是否深度思考
-    # 关闭思考的请求体写法。不同端点参数名不同，发错了会被静默忽略：
+    # 兼容老配置的布尔开关：等价于 thinking_level=medium / off。新代码应直接用档位
+    enable_thinking: bool = False
+    # 思考档位：off / low / medium / high；None = 用 enable_thinking 推导
+    thinking_level: Optional[str] = None
+    # 关闭思考时发给"没有关这个值"的端点用什么（effort 类默认 none，thinking_level 默认 minimal）
+    thinking_off_value: Optional[str] = None
+    # 请求体写法（core/llm/thinking.py）。不同端点参数名不同，发错了会被静默忽略：
     #   enable_thinking  — DashScope(Qwen) 顶层参数
     #   thinking_type    — DeepSeek：{"thinking": {"type": "enabled"|"disabled"}}
+    #   reasoning_effort — OpenAI GPT-5 / DeepSeek：none/low/medium/high
+    #   thinking_level   — Gemini 3：minimal/low/medium/high
     #   template_kwargs  — llama-server：chat_template_kwargs.enable_thinking
-    # None = 按 URL 猜；多个写法可以同时发（"a+b"），用于兼容代理后面的端点
+    #   none             — 一个字段都不发
+    # None = 按 URL 猜；多个部件可以用 + 组合（"thinking_type+reasoning_effort"）
     thinking_style: Optional[str] = None
     local_max_tokens: int = 4096 # 本地模型默认生成上限，防止失控循环生成
     # 端点的真实输出上限（可选，仅用于预算计算）。不配就回落到 local_max_tokens：
@@ -114,6 +113,8 @@ class HttpOpenAi(BaseChatModel):
     max_output_tokens: Optional[int] = None
     max_input_tokens: Optional[int] = None # 最大输入token数，供LangChain压缩中间件读取
     stream_read_timeout: float = 300.0 # 流式读超时；本地模型长prompt预fill首个token可能很慢
+    # 用量回调：子代理用它把 token 记到会话用量（主 agent 由 ChatService 从流里读，用不到）
+    usage_hook: Optional[Any] = None
 
     # 模型请求地址非空校验
     @field_validator('url')
@@ -129,12 +130,26 @@ class HttpOpenAi(BaseChatModel):
             raise ModelPropError("模型的名称不能为空")
         return v
 
-    # 关闭思考的写法在装配期就校验：拼错会导致"以为关了其实还在烧 token"
+    # 思考写法与档位在装配期就校验：拼错会导致"以为关了其实还在烧 token"
     @field_validator('thinking_style')
     def check_thinking_style(cls, v):
         if v is None or v == "":
             return None
-        return normalize_thinking_style(v)
+        try:
+            return normalize_style(v) or None
+        except ValueError as exc:
+            raise ModelPropError(str(exc)) from exc
+
+    @field_validator('thinking_level')
+    def check_thinking_level(cls, v):
+        if v is None or v == "":
+            return None
+        if is_auto(v):
+            return AUTO
+        try:
+            return normalize_level(v)
+        except ValueError as exc:
+            raise ModelPropError(str(exc)) from exc
 
     @property
     def _llm_type(self) -> str:
@@ -246,18 +261,20 @@ class HttpOpenAi(BaseChatModel):
     # 它不认 enable_thinking（实测传 False 仍会输出 reasoning_content）。
     DEEPSEEK_URL_MARKERS: ClassVar[tuple] = ("deepseek.com", "/deepseek/")
 
+    def _thinking_level(self) -> str:
+        """生效档位。
+
+        - 显式档位：直接用
+        - auto：返回空串，表示"一个思考字段都不发"（我们不知道模型默认档位）
+        - 未设置：由老布尔开关推导（兼容老调用方）
+        """
+        if is_auto(self.thinking_level):
+            return ""
+        return normalize_level(self.thinking_level) or ("medium" if self.enable_thinking else "off")
+
     def _thinking_style(self) -> str:
         """determine which request fields carry the thinking switch."""
-        if self.thinking_style:
-            return normalize_thinking_style(self.thinking_style)
-
-        if any(marker in self.url for marker in self.DEEPSEEK_URL_MARKERS):
-            return "thinking_type"
-
-        if self.url.startswith(self.LOCAL_URL_PREFIXES):
-            return "enable_thinking+template_kwargs"
-
-        return "enable_thinking"
+        return resolve_style(self.url, self.thinking_style)
 
     # 构建请求体
     def _build_payload(self, messages: List, stream: bool, **kwargs) -> dict:
@@ -268,15 +285,18 @@ class HttpOpenAi(BaseChatModel):
             **{k: v for k, v in kwargs.items() if v is not None}
         }
 
-        # llama-server需通过chat_template_kwargs把enable_thinking透传给聊天模板，顶层参数它不识别。
-        # DeepSeek 则只认 thinking.type——发 enable_thinking 会被静默忽略，用户以为关掉了其实没关。
-        style = self._thinking_style()
-        if "thinking_type" in style:
-            data["thinking"] = {"type": "enabled" if self.enable_thinking else "disabled"}
-        if "enable_thinking" in style:
-            data["enable_thinking"] = self.enable_thinking
-        if "template_kwargs" in style:
-            data["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
+        # 各端点写法不同（见 core/llm/thinking.py）：
+        #   llama-server 只认 chat_template_kwargs；
+        #   DeepSeek 只认 thinking.type；
+        #   GPT-5 起只认 reasoning_effort。
+        # 发错字段会被静默忽略，用户以为关掉了其实没关，所以这里统一走映射。
+        thinking_fields = build_fields(self._thinking_level(), self._thinking_style(),
+                                       self.thinking_off_value)
+        data.update(thinking_fields)
+        # 端点会静默忽略不认识的字段：把实际发出去的思考字段记进 DEBUG 日志，
+        # 排查"关了其实没关"时不用抓包
+        if logger:
+            logger.debug(f"思考请求字段 {self.model}: {thinking_fields}")
 
         if self.url.startswith(HttpOpenAi.LOCAL_URL_PREFIXES):
             # 本地模型不传max_tokens时默认按ctx剩余生成，跑飞时可达数分钟，强制上限兜底
@@ -337,6 +357,20 @@ class HttpOpenAi(BaseChatModel):
             kwargs["tool_choice"] = tool_choice
         return super().bind(tools=formatted_tools, **kwargs)
 
+    def _emit_usage(self, usage: Optional[dict], started: float) -> None:
+        """把一次调用的 usage 交给回调；回调异常不能影响对话本身。"""
+        if self.usage_hook is None or not isinstance(usage, dict):
+            return
+        tokens_in = int(usage.get("prompt_tokens") or 0)
+        tokens_out = int(usage.get("completion_tokens") or 0)
+        if not tokens_in and not tokens_out:
+            return
+        try:
+            self.usage_hook(self.model, tokens_in, tokens_out,
+                            round(time.monotonic() - started, 1))
+        except Exception as exc:  # noqa: BLE001 - 记账失败不该打断模型调用
+            logger.warning(f"子代理用量回调失败（{self.model}）：{exc}")
+
     # 解析非流式响应为ChatResult
     def _parse_completion_response(self, jresp: dict) -> ChatResult:
         choices = jresp.get("choices") or []
@@ -345,6 +379,10 @@ class HttpOpenAi(BaseChatModel):
 
         message = choices[0].get("message") or {}
         raw_tool_calls = message.get("tool_calls") or []
+        # 非流式响应同样带 usage；不回填到 usage_metadata，下游（用量、预算）就永远读到 0
+        usage = jresp.get("usage")
+        usage_metadata = (_create_usage_metadata(usage, jresp.get("service_tier"))
+                          if isinstance(usage, dict) and usage else None)
         # 思考字段名各端点不同，探测后仍写回规范键 reasoning_content，下游不用改
         reasoning_content = extract_reasoning(message)
         additional_kwargs = {"reasoning_content": reasoning_content} if reasoning_content else {}
@@ -366,7 +404,8 @@ class HttpOpenAi(BaseChatModel):
                 generations=[ChatGeneration(message=AIMessage(
                     content=message.get("content") or "",
                     tool_calls=tool_calls,
-                    additional_kwargs=additional_kwargs
+                    additional_kwargs=additional_kwargs,
+                    usage_metadata=usage_metadata,
                 ))]
             )
 
@@ -374,7 +413,10 @@ class HttpOpenAi(BaseChatModel):
         content = message.get("content", "") or ""
 
         return ChatResult(generations=[
-            ChatGeneration(message=AIMessage(content=content, additional_kwargs=additional_kwargs))
+            ChatGeneration(message=AIMessage(
+                content=content, additional_kwargs=additional_kwargs,
+                usage_metadata=usage_metadata,
+            ))
         ])
 
     # 异步流式输出 重写父类方法
@@ -397,6 +439,8 @@ class HttpOpenAi(BaseChatModel):
         watch = ReasoningWatch(self.model)
 
         timeout = httpx.Timeout(self.stream_read_timeout, connect=10)
+        started = time.monotonic()
+        usage: Optional[dict] = None
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 async with client.stream('POST', self.url, json=data, headers=headers) as response:
@@ -428,6 +472,10 @@ class HttpOpenAi(BaseChatModel):
                             default_chunk_class = generation_chunk.message.__class__
                             is_first_chunk = False
                             watch.observe(generation_chunk)
+                            if isinstance(chunk.get("usage"), dict):
+                                usage = chunk["usage"]
+                            if isinstance(chunk.get("usage"), dict):
+                                usage = chunk["usage"]
                             yield generation_chunk
 
                         except json.JSONDecodeError:
@@ -435,6 +483,7 @@ class HttpOpenAi(BaseChatModel):
                             continue
 
                     watch.finish()
+                self._emit_usage(usage, started)
             except httpx.HTTPError as e:
                 _raise_model_error(e)
             except ModelCallError:
@@ -462,6 +511,8 @@ class HttpOpenAi(BaseChatModel):
         watch = ReasoningWatch(self.model)
 
         timeout = httpx.Timeout(self.stream_read_timeout, connect=10)
+        started = time.monotonic()
+        usage: Optional[dict] = None
         with httpx.Client(timeout=timeout) as client:
             try:
                 with client.stream('POST', self.url, json=data, headers=headers) as response:
@@ -500,6 +551,7 @@ class HttpOpenAi(BaseChatModel):
                             continue
 
                     watch.finish()
+                self._emit_usage(usage, started)
             except httpx.HTTPError as e:
                 _raise_model_error(e)
             except ModelCallError:
@@ -522,12 +574,16 @@ class HttpOpenAi(BaseChatModel):
 
         # 请求模型
         timeout = httpx.Timeout(120) # 生成模式耗时较长，需要添加请求超时等待时间
+        started = time.monotonic()
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 response = await client.post(self.url, json=data, headers=headers)
                 response.raise_for_status()
 
-                return self._parse_completion_response(response.json())
+                payload = response.json()
+                result = self._parse_completion_response(payload)
+                self._emit_usage(payload.get("usage"), started)
+                return result
             except httpx.HTTPError as e:
                 _raise_model_error(e)
             except ModelCallError:
@@ -550,12 +606,16 @@ class HttpOpenAi(BaseChatModel):
 
         # 请求模型
         timeout = httpx.Timeout(120) # 生成模式耗时较长，需要添加请求超时等待时间
+        started = time.monotonic()
         with httpx.Client(timeout=timeout) as client:
             try:
                 response = client.post(self.url, json=data, headers=headers)
                 response.raise_for_status()
 
-                return self._parse_completion_response(response.json())
+                payload = response.json()
+                result = self._parse_completion_response(payload)
+                self._emit_usage(payload.get("usage"), started)
+                return result
             except httpx.HTTPError as e:
                 _raise_model_error(e)
             except ModelCallError:

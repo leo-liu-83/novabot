@@ -16,11 +16,15 @@
 """
 
 import os
+import sys
+from typing import Optional
 
 from langchain.agents.middleware import AgentMiddleware
-from deepagents.backends.protocol import GlobResult, GrepResult, LsResult
+from deepagents.backends.protocol import ExecuteResponse, GlobResult, GrepResult, LsResult
 
 from service.project.sensitive import is_sensitive
+from .project_venv import (build_env, ensure_venv, find_venv, installs_packages,
+                           is_venv_bootstrap)
 from .skill_backend import SkillGateBackend, SkillGateShellBackend
 
 # 文件工具的路径参数：文件名工具用 file_path，批量工具用 path
@@ -127,4 +131,34 @@ class ProjectFilesystemBackend(SensitivePathGuardMixin, SkillGateBackend):
 
 
 class ProjectShellBackend(SensitivePathGuardMixin, SkillGateShellBackend):
-    """项目 shell backend：cwd = 项目目录。"""
+    """项目 shell backend：cwd = 项目目录，并自动使用项目自己的 Python 环境。
+
+    写代码不需要激活环境；只有跑命令（`execute`）时才把项目 venv 前置进 PATH。
+    没有 venv 的 Python 工程会在第一次需要 Python 的命令里建一个 `.venv`
+    （由 uv/poetry/pdm 托管的项目除外）。
+    """
+
+    def execute(self, command: str, *, timeout: Optional[int] = None):
+        # 每次按当前状态算：agent 可能刚跑完 `uv sync`，venv 是之后才出现的
+        venv, _ = ensure_venv(self.project_root, command=command)
+        if not venv and is_venv_bootstrap(command):
+            # 空项目里没有 python 可执行文件（PATH 已剔除所有环境）：
+            # 显式建 venv 时把 NovaBot 的基础解释器目录临时加回 PATH，
+            # 让它能执行 `python -m venv`，但这条命令本身不创建任何东西
+            self._env = build_env(None)
+            self._env["PATH"] = (os.path.dirname(sys.executable)
+                                 + os.pathsep + self._env["PATH"])
+            return super().execute(command, timeout=timeout)
+        if not venv and installs_packages(command):
+            # 没有项目环境时 pip 会命中 NovaBot 自己的环境或系统 Python：
+            # 宁可直接拒绝，也不让一次 install 污染全局
+            return ExecuteResponse(
+                output=(
+                    "拒绝执行：项目里没有独立的虚拟环境，`pip install` 会装进 NovaBot 自己的环境"
+                    "或系统 Python。请先创建项目环境（`python -m venv .venv`），"
+                    "或改用项目所用的 uv / poetry / pdm 命令。"
+                ),
+                exit_code=1,
+            )
+        self._env = build_env(find_venv(self.project_root))
+        return super().execute(command, timeout=timeout)

@@ -103,9 +103,36 @@ NovaBot 把能力拆成几条独立边界：身份、执行档位、技能放行
 
 ## 7. 数据与密钥
 
-- 模型 key、搜索 provider key 和 MCP header 明文保存在本机
-- TUI 登录 token 明文保存在 `data/login.json`（`remember_login=false` 时不写）
-- 数据库文件权限就是主要边界
+### 7.1 可选的密钥加密
+
+模型 provider 的 key 与自备搜索接口的 key 可以加密后保存（`enc:v1:sm4:...`）：
+
+- 主密钥在安装时确定（用户粘贴 SM2 私钥 / SM4 密钥，留空则现场生成并打印），
+  之后启动自动从数据库读出，不需要每次输入；
+- `novabot.json` 与数据库里的 key 用 SM4-CBC 加密，完整性由 SM3 标签保证；
+  换一台机器时「配置文件 + 主密钥」就能解开；
+- 值仍是明文也能用（手改配置不需要重跑工具），`status` 会告诉你还剩几条明文；
+- 有密文但解不开时**不会**把密文当 key 发出去，而是报「主密钥缺失或不匹配」。
+
+```bash
+# 已有安装：补上加密（幂等）
+python -m util.secret_cli init --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+```
+
+**边界（必须知道）**：
+
+- 挡的是配置文件/数据库被单独拷走、截图、误传、备份脚本顺手带上；
+- 挡不住能读 `~/.novabot/data/novabot.db` 的本机进程 —— 主密钥就在同一个库里；
+- 挡不住能改配置的人（他可以把 `base_url` 指向自己的服务器）；
+- **备份整个 `~/.novabot` 会把主密钥和密文一起带走**，那种场景等于没有加密；
+- 不加密 `headers`、MCP `headers`、`data/login.json` 的登录 token。
+
+因此加密不替代文件权限：写配置时会把 `novabot.json` 与数据库收到 `0600`（POSIX）。
+
+### 7.2 其余数据
+
+- MCP header 仍按明文保存；登录 token 在 `data/login.json`（`remember_login=false` 时不写）
 - 不要把 `~/.novabot/` 提交到版本库或公开分享
 - 删除账号会清理会话、附件和相关数据；仍然建议定期备份
 

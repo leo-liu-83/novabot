@@ -40,6 +40,8 @@
 
 - 只在开发分支 `master` 上改，一个提交：`chore(release): 0.2.0`
 - 改完连同其他改动一起推 `origin master`
+- **版本号按批次走，不按提交走**：功能提交只进代码，不改版本号；一批功能攒到要对外交付时
+  再一次 bump，由维护者决定版本号。不要在每次新功能上线时单独 bump
 - 预发布（`scripts/prerelease.sh`）只同步内容到 `origin main`，不动版本号
 - 发布（`scripts/publish.sh`）只读版本号，不再在发布时临时决定
 

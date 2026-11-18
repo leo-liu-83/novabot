@@ -153,7 +153,7 @@ class ChatScreen(CommandMixin, Screen):
         super().__init__(**kwargs)
         self._session = session or create_session(title=first_message or "新对话")
         self.session_id = self._session["id"]
-        self.enable_thinking = self._session["thinking"]
+        self.thinking_level = self._session.get("thinking_level")
         self._model_notice = self._resolve_session_model(self._session["model"])
         self.first_message = first_message
         self._first_message_processed = False
@@ -254,7 +254,7 @@ class ChatScreen(CommandMixin, Screen):
 
             with Container(id="input-hints"):
                 with Horizontal(id="hints-row"):
-                    # spinner+esc提示占位；项目信息常显，右侧快捷键位置不受影响
+                    # spinner+esc 与项目信息共用一个槽位：执行中显示前两者，空闲时显示项目
                     with Container(id="chat-tags-box"):
                         yield DotSpinner(id="chat-running")
                         yield Label("[dim]esc[/dim] interrupt", id="chat-interrupt")
@@ -322,7 +322,13 @@ class ChatScreen(CommandMixin, Screen):
             pass
 
     def _refresh_cmd_status(self) -> None:
-        state = {True: "[goldenrod]think:on[/]", False: "[dim]think:off[/]", None: "[dim]think:auto[/]"}[self.enable_thinking]
+        # 档位直接显示成 think:off/low/medium/high；None = 跟随模型默认
+        if self.thinking_level in ("medium", "high"):
+            state = f"[goldenrod]think:{self.thinking_level}[/]"
+        elif self.thinking_level:
+            state = f"[dim]think:{self.thinking_level}[/]"
+        else:
+            state = "[dim]think:auto[/]"
         # 切模型后窗口可能变化：旧的 limit/百分比必须失效，下次渲染按新模型解析
         current = self.current_model()
         if getattr(self, "_ctx_model", current) != current:
@@ -346,7 +352,9 @@ class ChatScreen(CommandMixin, Screen):
         self.query_one("#chat-stats", Label).update(" · ".join(x for x in parts if x))
         self.query_one("#chat-think", Label).update(state)
         self.query_one("#chat-model", Label).update(f"[b]Build[/] [dim]· {self.current_model()}[/]")
-        self.query_one("#chat-project", Label).update(project_segment(
+        # 执行中那一行要让给 spinner 与 esc 提示：两段信息挤在一起既挤又容易看错，
+        # 项目信息在执行结束（_set_agent_running(False) 会触发本方法）后恢复
+        self.query_one("#chat-project", Label).update("" if self._agent_running else project_segment(
             self._session.get("project_name"),
             self._session.get("project_path"),
             self._project_avail_width(),
@@ -435,7 +443,7 @@ class ChatScreen(CommandMixin, Screen):
             await slot[1].stop()
         self.call_later(self._scroll_to_bottom)
 
-    # agent执行中：显示主题色运行图标与esc中断提示（项目信息保持常显）
+    # agent执行中：显示主题色运行图标与esc中断提示（项目信息此时让位，执行完再显示）
     def _set_agent_running(self, running: bool, gen: int, seq: int) -> None:
         # 运行标志只认最新一代worker：切换会话会取消旧worker，其finally带着旧世代号进来，
         # 若也写标志，会把已取消的执行标成"仍在跑"，空闲时按ESC反复误报"已中断执行"。
@@ -454,8 +462,7 @@ class ChatScreen(CommandMixin, Screen):
             if running:
                 interrupt.update("[dim]esc[/dim] interrupt")
             interrupt.display = running
-            # 项目信息常显：执行中也保留，与 Web 输入框下的项目控件一致。
-            # spinner/esc 出现后可用宽度变窄，布局算完再重新截断一次路径。
+            # 运行态切换会改变项目信息的显隐：布局算完再按新可用宽度重算一次
             self.query_one("#tool-status", Horizontal).display = running and bool(self._active_tools)
             self.call_after_refresh(self._refresh_cmd_status)
         except Exception:
@@ -939,7 +946,8 @@ class ChatScreen(CommandMixin, Screen):
             title = seed[:30] + "..." if len(seed) > 30 else seed
             self.set_chat_title(title)
         # 缓存也要跟着改名：选择弹窗读的是这个条目，只改标签的话它会一直显示「新对话」
-        update_session(self._session, title=title, model=self.model, thinking=self.enable_thinking)
+        update_session(self._session, title=title, model=self.model,
+                       thinking_level=self.thinking_level)
         self.add_user_message(query, attachments=attachments)
         self._refresh_cmd_status()
         self._response_worker = self.add_response(query, attachments or [])
@@ -1194,12 +1202,15 @@ class ChatScreen(CommandMixin, Screen):
         self._set_agent_running(True, gen, seq)
         try:
             try:
-                service = ChatService(input=ChatInputSchema(
-                    query="",
-                    session_id=self.session_id,
-                    model=self.model,
-                    enable_thinking=self.enable_thinking,
-                ))
+                service = await asyncio.to_thread(
+                    ChatService,
+                    ChatInputSchema(
+                        query="",
+                        session_id=self.session_id,
+                        model=self.model,
+                        thinking_level=self.thinking_level,
+                    ),
+                )
             except SessionAccessError:
                 await self._mount_session_error()
                 return
@@ -1227,13 +1238,19 @@ class ChatScreen(CommandMixin, Screen):
     async def _respond(self, user_input: str, gen: int, attachments: Optional[list]=None) -> None:
         # off时前端同步屏蔽think下发：部分模型不遵守enable_thinking，仍会输出思考
         try:
-            service = ChatService(input=ChatInputSchema(
-                query=user_input,
-                session_id=self.session_id,
-                model=self.model,
-                enable_thinking=self.enable_thinking,
-                show_thinking=self.enable_thinking is not False,
-            ), attachments=attachments or [])
+            # 构造会做模型发现（HTTP）与 agent 编译，几百毫秒起步：必须离开事件循环，
+            # 否则每轮提问都先卡一下（模型目录 TTL 到期时最明显）。
+            service = await asyncio.to_thread(
+                ChatService,
+                ChatInputSchema(
+                    query=user_input,
+                    session_id=self.session_id,
+                    model=self.model,
+                    thinking_level=self.thinking_level,
+                    show_thinking=self.thinking_level != "off",
+                ),
+                attachments=attachments or [],
+            )
         except SessionAccessError:
             await self._mount_session_error()
             return
@@ -1583,7 +1600,7 @@ class ChatScreen(CommandMixin, Screen):
         except Exception:
             pass
         model_notice = self._resolve_session_model(entry["model"])
-        self.enable_thinking = entry["thinking"]
+        self.thinking_level = entry.get("thinking_level")
         self._message_count = 0
         self._always_approve = False
         self._confirm_idx = 0

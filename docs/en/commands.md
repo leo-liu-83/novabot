@@ -37,7 +37,7 @@ Type `/` in the input box to open the command picker.
 | `/new` | Start a new session |
 | `/session` | Switch session |
 | `/model` | Switch model |
-| `/think` | Thinking mode: on / off / auto |
+| `/think` | Thinking level: off / low / medium / high / auto (trimmed to what the model supports) |
 | `/compact` | Compact context manually |
 | `/lang` | Switch Chinese / English |
 | `/help` | Show all commands |

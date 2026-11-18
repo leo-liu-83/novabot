@@ -7,10 +7,14 @@
   const day = (d) => new Date(NOW - d * 86400000).toISOString();
 
   const models = [
-    { id: 'dashscope/qwen3.5-plus', name: 'Qwen3.5-Plus', provider: '阿里云百炼', thinking: true, ctx: 131072 },
-    { id: 'dashscope/qwen-plus', name: 'Qwen-Plus', provider: '阿里云百炼', thinking: false, ctx: 131072 },
-    { id: 'dashscope/qwen3-32b', name: 'Qwen3-32B', provider: '阿里云百炼', thinking: true, ctx: 131072 },
-    { id: 'local/deepseek-v4', name: 'DeepSeek V4.1', provider: '本地网关', thinking: true, ctx: 65536 },
+    { id: 'dashscope/qwen3.5-plus', name: 'Qwen3.5-Plus', provider: '阿里云百炼', thinking: true, ctx: 131072,
+      thinkingLevels: ['off', 'low', 'medium', 'high'], thinkingDefault: 'medium' },
+    { id: 'dashscope/qwen-plus', name: 'Qwen-Plus', provider: '阿里云百炼', thinking: false, ctx: 131072,
+      thinkingLevels: ['off', 'medium'], thinkingDefault: 'off' },
+    { id: 'dashscope/qwen3-32b', name: 'Qwen3-32B', provider: '阿里云百炼', thinking: true, ctx: 131072,
+      thinkingLevels: ['off', 'medium'], thinkingDefault: 'medium' },
+    { id: 'local/deepseek-v4', name: 'DeepSeek V4.1', provider: '本地网关', thinking: true, ctx: 65536,
+      thinkingLevels: ['off', 'low', 'high', 'max'], thinkingDefault: 'high' },
   ];
 
   const identities = {
@@ -42,7 +46,7 @@
 
   const sessions = [
     {
-      id: 's_e92', title: 'E9.2 剩余项', model: 'dashscope/qwen3.5-plus', thinking: true, level: 'T2',
+      id: 's_e92', title: 'E9.2 剩余项', model: 'dashscope/qwen3.5-plus', thinkingLevel: 'medium', level: 'T2',
       updatedAt: ago(2), tokensIn: 18420, tokensOut: 3120,
       messages: [
         { role: 'user', ts: ago(9), content: 'E9.2 还剩什么没做？只看规划，不要动代码。' },
@@ -77,7 +81,7 @@
       ],
     },
     {
-      id: 's_gh', title: 'GitHub 建 issue', model: 'dashscope/qwen-plus', thinking: true, level: 'T2',
+      id: 's_gh', title: 'GitHub 建 issue', model: 'dashscope/qwen-plus', thinkingLevel: 'medium', level: 'T2',
       updatedAt: ago(37), tokensIn: 6120, tokensOut: 540,
       messages: [
         { role: 'user', ts: ago(40), content: '帮我在 github 上给 novabot 开个 issue，标题写「MCP 工具权限需要逐工具确认」，正文说明 ask 模式的行为。' },
@@ -100,7 +104,7 @@
       ],
     },
     {
-      id: 's_skill', title: '技能审查：pdf-tools', model: 'dashscope/qwen3.5-plus', thinking: false, level: 'T1',
+      id: 's_skill', title: '技能审查：pdf-tools', model: 'dashscope/qwen3.5-plus', thinkingLevel: 'off', level: 'T1',
       updatedAt: ago(190), tokensIn: 9210, tokensOut: 880,
       messages: [
         { role: 'user', ts: ago(192), content: 'pdf-tools 这个技能安全吗？' },
@@ -122,7 +126,7 @@
       ],
     },
     {
-      id: 's_web', title: '搜索配额与降级', model: 'dashscope/qwen-plus', thinking: false, level: 'T1',
+      id: 's_web', title: '搜索配额与降级', model: 'dashscope/qwen-plus', thinkingLevel: 'off', level: 'T1',
       updatedAt: day(1), tokensIn: 3310, tokensOut: 260,
       messages: [
         { role: 'user', ts: day(1), content: '我的搜索配额怎么算？' },
@@ -233,7 +237,7 @@
   ];
 
   const system = {
-    version: '0.2.2',
+    version: '0.3.0',
     build: '2026.10.23 · local',
     entry: '0.0.0.0:9000',
     modeLabel: '多用户',
@@ -273,7 +277,7 @@
       chatSession: 's_e92',
       chatFilter: '',
       defaultModel: models[0].id,
-      defaultThinking: true,
+      defaultThinkingLevel: 'medium',
       defaultLevel: 'T2',
       mcpOpen: 'docs',
       skillSelected: 'pdf-tools',
@@ -328,7 +332,13 @@
       return this.users.find((u) => u.username === name) || null;
     },
     model(id) {
-      return this.models.find((m) => m.id === id) || this.models[0];
+      // 目录为空（配置没加载/发现失败）或会话绑定的模型已不存在时，必须给占位对象：
+      // 返回 undefined 会让 headHTML 里的 model.name 抛异常，整页只剩空白
+      return this.models.find((m) => m.id === id) || this.models[0] || {
+        id: id || '',
+        name: id || NB.i18n.t('（未配置模型）'),
+        provider: '', providerCode: '', thinkingLevels: [], thinkingDefault: null, ctx: 0,
+      };
     },
     session(id) {
       return this.sessions.find((s) => s.id === id) || null;

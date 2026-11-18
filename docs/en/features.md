@@ -17,7 +17,7 @@
 - Provider- and model-level request headers, including custom auth headers
 - `${session_id}` placeholders and automatic `x-opencode-session`
 - Dynamic model discovery: omit `models` to discover; provide `models` as a static allowlist
-- Thinking switch with endpoint-specific `thinking_style`
+- Thinking levels (off / low / medium / high) with endpoint-specific styles: `reasoning_effort`, `thinking`, `thinking_level`, `enable_thinking`
 - Per-session model selection; new-session selection is used for the first request
 
 See [Model configuration](model-config.md).
@@ -159,10 +159,44 @@ Permissions and boundaries:
 - Project sessions cap the shell at T3 by default; T4 must be raised explicitly with `/exec`, and its meaning narrows from "any command, no confirmation" to "no confirmation inside the project" — commands naming paths outside the project still ask
 - "Always allow" on a confirmation card is remembered per path and applies to the current session only; moving or switching a session to another project clears those approvals so they cannot leak into it
 - Archiving a project stops using it; the directory is not deleted and existing files are not moved
+- **Project virtualenv**: shell commands in a project session use the project's own Python
+  environment — an existing `.venv` / `venv` / `env` (with `pyvenv.cfg`) is used as is; without
+  one, the first command that actually **runs tests/scripts or installs dependencies** creates
+  `.venv` (empty projects and queries such as `python -V` do not; projects managed by
+  uv/poetry/pdm with a lockfile are left to their own runner; `python -m venv .venv` also works
+  explicitly). Editing files is unaffected;
+  only `execute` injects `PATH` and `VIRTUAL_ENV`. **Pollution guard**: child processes inherit
+  no other environment variables, `PATH` drops every venv/conda entry (including NovaBot's own),
+  and `pip install` is refused when the project has no isolated environment — it never lands in
+  NovaBot or the system Python
 
 Entry points:
 
 - Web: the projects page (`#/projects`) creates, renames and archives projects, edits or generates the project `AGENTS.md`, and lists the project's sessions
-- TUI: `/project` creates or renames a project for the current directory (a new project also adopts the current session when it has none); `/session` shows which project a session belongs to
+- TUI: `/project` works on the current directory — with no project it asks for a name right away (and adopts the current session when it has none); with a project it shows that project, Enter renames it and `Ctrl+D` deletes it (it first asks whether to remove only the record or also clean `.novabot` / `AGENTS.md`; sessions are always only detached); when `.novabot/notes` or `AGENTS.md` is missing the dialog offers "Fill in missing project files" and only fills the gaps; `/session` shows which project a session belongs to
 
-Explicit non-goals: no automatic directory creation or relocation, no sharing between projects, no project-level long-term memory, and no process-level sandbox.
+Explicit non-goals: no project directory relocation (the web console creates the project subdirectory under the chosen root; the TUI still registers the current directory), no sharing between projects, no project-level long-term memory, and no process-level sandbox.
+
+## 14. Subagents
+
+The main agent can hand work to two built-in subagents. Each runs in its own context and returns
+only the conclusion.
+
+| Role | Can do | Use it when |
+|---|---|---|
+| `explore` | Read-only: `ls` / `read_file` / `glob` / `grep`, plus search, fetch and document conversion | You need to find code across files or gather facts first |
+| `general` | Every main-agent tool except `task`; writes still follow the execution level | The plan is clear and code must change or commands must run |
+
+- Dispatch rules live in the main prompt: small edits stay inline; explore first when the code is
+  unknown, then hand the facts to `general`
+- Subagents inherit the session's execution level, project path boundary, MCP/fetch permissions and
+  write confirmation; they **cannot dispatch further subagents**
+- Concurrency: at most 3 running globally; one `general` per session; at most 6 `task` calls per
+  turn; a subagent active for more than 5 minutes is stopped; queueing longer than 60 seconds
+  returns a tool error so the main model can serialise or do the work itself
+- Models: each role can pin a model; an empty value follows the session model, and an unusable
+  configuration falls back with a one-time notice
+- Usage: subagent calls are recorded per role in `usage_events`, so reports separate main and
+  subagent spend
+- Non-goals: no background tasks that outlive a turn, no inner token stream in the UI, and no
+  custom roles from the web console

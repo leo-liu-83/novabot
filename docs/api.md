@@ -101,12 +101,17 @@ Content-Type: application/json
     "query": "你好",
     "session_id": "可选；首次留空",
     "model": "provider/model",
+    "thinking_level": "medium",
     "enable_thinking": true,
     "attachments": [
         {"id": "已上传附件 id", "name": "report.pdf"}
     ]
 }
 ```
+
+`thinking_level` 取 `off` / `low` / `medium` / `high`，不传表示跟随模型默认；
+`enable_thinking` 是旧字段，等价于 `true=medium` / `false=off`。`show_thinking`
+只控制是否回显思考内容，不改变请求档位。
 
 返回 SSE 流式事件：
 
@@ -134,7 +139,39 @@ POST /api/v1/chat/resume
 GET /api/v1/models
 ```
 
-返回模型展示信息和 `configured` 状态，不返回 key、base_url 或请求头。
+返回模型展示信息和 `configured` 状态，不返回 key、base_url 或请求头。另外带 `default_model`
+与 `subagents`：
+
+```json
+{
+  "default_model": "dashscope/qwen3.5-plus",
+  "subagents": [
+    {"role": "explore", "title": "探索", "description": "只读查资料、跨文件定位",
+     "model": "", "fallback_model": "dashscope/qwen3.5-plus", "inherits": true}
+  ]
+}
+```
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/models/default` | 设置 `agent.model`（管理员） |
+| PUT | `/models/subagents/{role}` | 设置某个子代理角色的模型（管理员） |
+
+`PUT` 的 body 是 `{"model": "provider/model"}`；空串表示跟随会话模型。角色必须是
+`explore` / `general`，否则 404 `model.role_not_found`；非空模型必须能在当前配置里用，否则
+404 `model.not_found`。
+
+响应里还有密钥加密状态（系统信息页用）：
+
+```json
+"secrets": {
+  "enabled": true, "algo": "sm2", "fingerprint": "9f3c1a02",
+  "plaintext": 0, "undecryptable": 0
+}
+```
+
+`plaintext` 是配置文件与库里剩余的明文 key 条数；`undecryptable` 是带密文前缀却解不开的条数
+（主密钥缺失或不匹配）。没有主密钥时 `enabled=false`。
 
 ## 7. 搜索 provider
 

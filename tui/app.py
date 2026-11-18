@@ -15,7 +15,7 @@ from textual.app import App
 from textual.reactive import reactive
 
 from config import config
-from logger import logger
+from logger import logger, silence_console
 from core.agent import persistence
 from .screens import WelcomeScreen, ChatScreen
 from .screens.admin_setup_screen import AdminSetupScreen
@@ -61,6 +61,15 @@ class NovaBotApp(App):
     ]
 
     show_chat = reactive(False)
+
+    def run(self, *args, **kwargs):
+        """进入全屏前先摘掉 loguru 的 stderr sink。
+
+        否则每条日志都会在边框外漏出一段彩色文字，并打断 Textual 的整屏重绘。
+        放在 run() 而不是模块导入时：测试与 REPL import 这个模块不该被静音。
+        """
+        silence_console()
+        return super().run(*args, **kwargs)
 
     async def on_mount(self) -> None:
         """应用启动时显示欢迎页面"""
@@ -138,5 +147,6 @@ class NovaBotApp(App):
                 welcome = self.screen
                 self.push_screen(ChatScreen(
                     first_message=text_to_send,
-                    session=create_session(model=getattr(welcome, "model", None), thinking=getattr(welcome, "enable_thinking", None)),
+                    session=create_session(model=getattr(welcome, "model", None),
+                                          thinking_level=getattr(welcome, "thinking_level", None)),
                 ))

@@ -25,7 +25,13 @@ class ModelDto:
     code: str  # 模型Code
     name: str  # 模型名称
     stream: bool = True  # 是否流式
-    enable_thinking: bool = False  # 是否思考
+    enable_thinking: bool = False  # 是否思考（老字段：等价于 thinking_default=medium/off）
+    # 思考档位：模型默认档位与它接受的档位集合（off/low/medium/high）。
+    # 不填时由 enable_thinking 推默认档，档位集合按写法决定（见 core/llm/thinking.py）
+    thinking_default: Optional[str] = None
+    thinking_levels: Optional[list[str]] = None
+    # 关闭思考时发给"没有关这个值"的端点用什么（effort 类默认 none，thinking_level 默认 minimal）
+    thinking_off_value: Optional[str] = None
     num_ctx: int = 0  # 上下文窗口
     # 端点的真实输出上限；不配时预算按 4096 预留（保守）。仅在端点确实更大时填
     max_output_tokens: Optional[int] = None
@@ -52,11 +58,27 @@ class ProviderDto:
     dynamic_models: bool = False
     # 模型发现地址；留空按 base_url + /models。OpenCode 这类平台路径不同需显式配置
     models_url: str = ""
+    # provider 级思考默认：动态发现型网关（OpenCode/OpenRouter 等）没有静态模型条目，
+    # 没法逐模型写 thinking_*；这里的值作为它下面所有模型的默认，模型级配置仍然优先
+    thinking_style: Optional[str] = None
+    thinking_default: Optional[str] = None
+    thinking_levels: Optional[list[str]] = None
+    thinking_off_value: Optional[str] = None
 
 @dataclass
 class LlmDto:
     """LLM运行时默认参数"""
     max_input_tokens: Optional[int] = None  # 模型未配置num_ctx时的默认最大输入token数
+
+@dataclass
+class SubagentDto:
+    """子代理角色配置。
+
+    目前只有一个字段：模型。空串表示"跟随当前会话模型"，是显式取值，不是缺省——
+    解析与合并时都不能把空串当成"没配置"丢掉。
+    """
+    model: str = ""
+
 
 @dataclass
 class AgentDto:
@@ -65,6 +87,8 @@ class AgentDto:
     # 单次运行的模型调用轮数上限（LLM→工具→LLM 往返）。None/0=不限。
     # 到顶时摘掉工具逼模型用文本收尾（学OpenCode的maxSteps）
     max_steps: Optional[int] = None
+    # 子代理角色 -> 配置。键是内置角色名（explore / general），未知键解析时忽略。
+    subagents: Optional[dict[str, SubagentDto]] = None
 
 @dataclass
 class ExecDto:
@@ -128,6 +152,16 @@ class AttachmentDto:
 
 
 @dataclass
+class ProjectsDto:
+    """项目相关的配置。
+
+    `web_roots`：Web 端允许登记项目的额外根目录（workspace 始终允许）。
+    不配置时 Web 只能在 workspace 里登记；TUI 不受此限制。
+    """
+    web_roots: Optional[list[str]] = None
+
+
+@dataclass
 class ConfigDto:
     """配置定义"""
     models: list[ProviderDto]  # 供应商列表
@@ -136,6 +170,7 @@ class ConfigDto:
     exec: Optional[ExecDto] = None  # 脚本执行档位（None=未显式配置，服务封顶取T4）
     web: Optional[WebDto] = None  # 网络能力（None=全默认：搜索开、抓取ask）
     mcp: Optional[McpDto] = None  # MCP能力（None=无系统层server）
+    projects: Optional[ProjectsDto] = None  # 项目功能（Web 目录白名单）
     attachments: Optional[AttachmentDto] = None  # 附件限制与草稿保留
     multi_user: Optional[bool] = None  # 是否启用多用户（None=未显式配置，取默认）
     remember_login: Optional[bool] = None  # 登录态是否跨启动保留

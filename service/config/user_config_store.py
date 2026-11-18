@@ -16,7 +16,7 @@ import tempfile
 from typing import Optional
 
 from config import config
-from service.config.dtos import AgentDto
+from service.config.dtos import AgentDto, SubagentDto
 
 
 class UserConfigError(Exception):
@@ -89,6 +89,45 @@ def _apply_in_memory(model: str) -> None:
         data.agent = AgentDto(model=model)
     else:
         data.agent.model = model
+
+
+def _apply_subagent_in_memory(role: str, model: str) -> None:
+    data = config.CONFIG_DATA
+    if data is None:
+        return
+    if data.agent is None:
+        data.agent = AgentDto(model="")
+    if data.agent.subagents is None:
+        data.agent.subagents = {}
+    data.agent.subagents[role] = SubagentDto(model=model)
+
+
+def set_subagent_model(role: str, model: str) -> str:
+    """把某个子代理角色的模型写进用户配置，并同步内存。
+
+    角色合法性由接口层校验（只允许内置角色）；这里只负责"只改这一处"。
+    """
+    path = user_config_path()
+    data = _read_existing(path)
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+    subagents = agent.get("subagents")
+    if not isinstance(subagents, dict):
+        subagents = {}
+    entry = subagents.get(role)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["model"] = model
+    subagents[role] = entry
+    agent["subagents"] = subagents
+    data["agent"] = agent
+    try:
+        _write_atomic(path, data)
+    except OSError as exc:
+        raise UserConfigError(f"写入 {path} 失败：{exc}", code="model.write_failed") from exc
+    _apply_subagent_in_memory(role, model)
+    return model
 
 
 def set_agent_model(model: str) -> str:

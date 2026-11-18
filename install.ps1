@@ -173,6 +173,36 @@ function Get-ProviderCode([string]$Url) {
     return "provider"
 }
 
+# Encrypt the plaintext keys just written. Failures only warn: the config stays usable.
+# The master key travels via an environment variable (never a command-line argument), and
+# non-interactive installs never auto-generate one (CI logs would keep the private key).
+function Protect-ConfigKeys {
+    $dataDir = Join-Path $script:ConfigDir "data"
+    # No key was written: do not create a master key that protects nothing
+    if (-not $script:ProviderKey -and -not $env:NOVABOT_MASTER_KEY) { return }
+    if (-not $script:Interactive -and -not $env:NOVABOT_MASTER_KEY) {
+        Write-UiWarn "Key encryption not enabled (non-interactive installs never generate a master key)."
+        Write-Host "  Run: python -m util.secret_cli init --config `"$($script:ConfigFile)`" --data-dir `"$dataDir`""
+        return
+    }
+
+    $env:NOVABOT_MASTER_KEY = $script:MasterKey
+    try {
+        $out = & $Py -m util.secret_cli init --config $script:ConfigFile --data-dir $dataDir 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        Remove-Item Env:NOVABOT_MASTER_KEY -ErrorAction SilentlyContinue
+    }
+    if ($code -ne 0) {
+        Write-UiWarn "Key encryption failed (keys stay plaintext): $out"
+        return
+    }
+    # The generated private key must be visible to the user
+    $out | ForEach-Object { Write-Host $_ }
+    $match = [regex]::Match(($out -join "`n"), "fingerprint ([0-9a-f]{8})")
+    if ($match.Success) { $script:MasterFp = $match.Groups[1].Value }
+}
+
 # Write a minimal user config: only the differences; everything else comes from the
 # built-in config/config.json. UTF-8 without BOM, because the app reads it as UTF-8.
 function Write-Config([string]$Path) {
@@ -478,6 +508,8 @@ function Main {
     $script:MultiUser = $false
     $script:ProviderBaseUrl = ""
     $script:ProviderKey = ""
+    $script:MasterKey = ""
+    $script:MasterFp = ""
     $script:ProviderModel = ""
     $script:ProviderCode = ""
 
@@ -562,6 +594,9 @@ function Main {
                 $script:ProviderBaseUrl = Ask-Value "Endpoint (e.g. https://api.deepseek.com; empty to skip)" ""
                 if ($script:ProviderBaseUrl) {
                     $script:ProviderKey = Ask-Secret "API Key (not echoed; may be empty)"
+                    if ($script:ProviderKey) {
+                        $script:MasterKey = Ask-Secret "Master key (SM2 private key 64 hex chars / SM4 key 32 hex chars; empty = generate)"
+                    }
                     $script:ProviderModel = Ask-Value "Model code (e.g. deepseek-flash; empty = pick with /model on first run)" ""
                     $script:ProviderCode = Get-ProviderCode $script:ProviderBaseUrl
                 }
@@ -660,6 +695,7 @@ function Main {
         }
         Write-Config $script:ConfigFile
         Write-UiProgress "Wrote config $($script:ConfigFile)"
+        Protect-ConfigKeys
     }
 
     Write-Host ""
@@ -671,6 +707,9 @@ function Main {
     if ($script:WriteConfig) {
         $modeLabel = if ($script:MultiUser) { "multi user" } else { "single user" }
         Write-UiKv "Config    " "$($script:ConfigFile) ($modeLabel)"
+        if ($script:MasterFp) {
+            Write-UiKv "Master key" "encryption enabled (fingerprint $($script:MasterFp))"
+        }
         if (-not $script:ProviderBaseUrl) {
             Write-UiWarn "No model endpoint configured: edit the models block and agent.model in $($script:ConfigFile),"
             Write-Host "         otherwise chats cannot start. See docs/model-config.md"

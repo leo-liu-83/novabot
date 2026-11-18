@@ -99,6 +99,7 @@ Content-Type: application/json
     "query": "hello",
     "session_id": "optional; omit for a new session",
     "model": "provider/model",
+    "thinking_level": "medium",
     "enable_thinking": true,
     "attachments": [
         {"id": "uploaded-id", "name": "report.pdf"}
@@ -130,7 +131,39 @@ POST /api/v1/chat/resume
 GET /api/v1/models
 ```
 
-Returns display metadata and `configured`; never returns keys, `base_url` or headers.
+Returns display metadata and `configured`; never returns keys, `base_url` or headers. It also carries
+`default_model` and `subagents`:
+
+```json
+{
+  "default_model": "dashscope/qwen3.5-plus",
+  "subagents": [
+    {"role": "explore", "title": "Explore", "description": "Read-only research",
+     "model": "", "fallback_model": "dashscope/qwen3.5-plus", "inherits": true}
+  ]
+}
+```
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/models/default` | Set `agent.model` (administrator) |
+| PUT | `/models/subagents/{role}` | Set one subagent role's model (administrator) |
+
+The `PUT` body is `{"model": "provider/model"}`; an empty string follows the session model. The role
+must be `explore` or `general`, otherwise 404 `model.role_not_found`; a non-empty model must be
+usable in the current configuration, otherwise 404 `model.not_found`.
+
+The response also reports key encryption state (used by the system page):
+
+```json
+"secrets": {
+  "enabled": true, "algo": "sm2", "fingerprint": "9f3c1a02",
+  "plaintext": 0, "undecryptable": 0
+}
+```
+
+`plaintext` counts keys still stored as plaintext; `undecryptable` counts ciphertext values that
+cannot be opened (master key missing or mismatched). Without a master key `enabled` is false.
 
 ## 7. Search providers
 

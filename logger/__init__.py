@@ -7,4 +7,4 @@
 # @Version     : 1.0
 # @Description :
 
-from .logger import logger
+from .logger import logger, silence_console

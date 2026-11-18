@@ -69,6 +69,10 @@ Do not include `/chat/completions` in `base_url`.
 | `dynamic_models` | No | Discover models from `/models` |
 | `models_url` | No | Discovery URL; defaults to `base_url + /models` |
 
+> A provider's `key` / `api_key` may be ciphertext (`enc:v1:sm4:...`) and is decrypted on
+> load; plaintext keeps working. See
+> [configuration §10.5](configuration.md#105-optional-key-encryption) for the master key.
+
 ## 4. Model fields
 
 | Field | Required | Purpose |
@@ -230,29 +234,73 @@ Priority, low to high:
 - `x-opencode-session` is automatically filled with the session ID when configured
 - Works at both provider and model level
 
-## 8. Thinking styles
+## 8. Thinking levels and request styles
 
-| Endpoint | Parameter |
-|---|---|
-| DashScope / Qwen | top-level `enable_thinking` |
-| DeepSeek | `thinking: {"type": "enabled"/"disabled"}` |
-| llama-server | `enable_thinking` + `chat_template_kwargs.enable_thinking` |
+Most 2026 models no longer have a hard "thinking off" switch; they expose levels
+(OpenAI `reasoning_effort`, Gemini 3 `thinking_level`, DeepSeek effort plus `thinking.type`).
+NovaBot normalises them to **off / low / medium / high**, plus a session-level `auto`
+(no override, follow the model default).
 
-Optional explicit value:
+### 8.1 Per-model config
 
 ```json
-{ "code": "deepseek-flash", "thinking_style": "thinking_type" }
+{
+  "code": "gpt-5.1",
+  "name": "GPT-5.1",
+  "thinking_style": "reasoning_effort",
+  "thinking_default": "medium",
+  "thinking_levels": ["off", "low", "medium", "high"],
+  "thinking_off_value": "none"
+}
 ```
 
-Allowed values:
+| Field | Meaning |
+|---|---|
+| `thinking_style` | Request fields to send; `+` composes parts such as `thinking_type+reasoning_effort` |
+| `thinking_default` | Default level; when omitted it is derived from the legacy `enable_thinking` (true=medium, false=off) |
+| `thinking_levels` | Levels this model accepts; `/think` and the web picker only offer these |
+| `thinking_off_value` | What `off` sends to endpoints without an off switch (effort defaults to `none`, `thinking_level` to `minimal`) |
 
-```text
-enable_thinking
-thinking_type
-template_kwargs
-enable_thinking+template_kwargs
-enable_thinking+thinking_type
+The legacy `enable_thinking` still works and is equivalent to `thinking_default`
+(true=medium, false=off).
+
+### 8.2 Styles per endpoint
+
+| Endpoint | `thinking_style` | What `off` sends |
+|---|---|---|
+| OpenAI GPT-5.x / o-series | `reasoning_effort` | `reasoning_effort: "none"` (older models: set `thinking_off_value: "minimal"`) |
+| OpenCode gateway (opencode.ai) | `reasoning_effort` (auto-detected) | `reasoning_effort: "none"` |
+| DeepSeek | `thinking_type` (add `+reasoning_effort` for levels) | `thinking: {"type": "disabled"}` |
+| Gemini 3 | `thinking_level` | `thinking_level: "minimal"` |
+| Qwen / DashScope | `enable_thinking` | `enable_thinking: false` |
+| llama-server | `template_kwargs` (or `enable_thinking+template_kwargs`) | `chat_template_kwargs.enable_thinking: false` |
+| Endpoints that reject unknown fields | `none` | nothing is sent |
+
+Without `thinking_style`, the style is guessed from `base_url`: `api.openai.com` / `opencode.ai` →
+`reasoning_effort`, `deepseek.com` → `thinking_type`, **loopback addresses** (`127.0.0.1` /
+`localhost` / `[::1]` / `unix://`) → `enable_thinking+template_kwargs`, otherwise (including LAN
+IPs and remote gateways) top-level `enable_thinking`. A wrong guess is silently ignored by the
+server, so set `thinking_style` explicitly for gateways and LAN inference servers:
+
+```json
+"myvllm": {
+  "base_url": "http://192.168.10.5:8000/v1",
+  "dynamic_models": true,
+  "thinking_style": "enable_thinking+template_kwargs"
+}
 ```
+
+This is a common trap: Qwen served by vLLM / SGLang / llama.cpp only understands
+`chat_template_kwargs.enable_thinking`, but on `192.168.x.x` it is not detected as "local", so the
+top-level parameter is silently ignored and the thinking toggle appears to do nothing.
+
+### 8.3 Models that cannot turn thinking off
+
+Gemini 3 Pro and Claude 5.x only have levels. Either drop `off` from `thinking_levels`, or
+keep it with `thinking_off_value: "minimal"` meaning "lowest tier" rather than truly off.
+
+Switch levels with `/think` in the TUI or the `think` chip in the web header. It only affects
+later requests; `show_thinking=false` merely hides reasoning text.
 
 ## 9. Dynamic model discovery
 
@@ -332,3 +380,26 @@ intranet/qwen3-32b
 - Keys and headers are plaintext in `~/.novabot/novabot.json`
 - Do not commit or share the file
 - Treat intranet tokens like model keys
+
+---
+
+## 13. Subagent models
+
+Subagents have two built-in roles, each of which can pin a model:
+
+```json
+"agent": {
+    "subagents": {
+        "explore": {"model": "dashscope/qwen-flash"},
+        "general": {"model": ""}
+    }
+}
+```
+
+- `""` or a missing role follows the current session model (whatever `/model` selected)
+- Role models do not inherit the session `/think` switch; they use the model's own `enable_thinking`
+- Suggestion: give `explore` a cheap, fast, large-context model (it is read-only and called often);
+  let `general` follow the session model or pin a comparable one
+- A missing model or missing key falls back to the session model with a one-time notice; the chat
+  itself never fails because of it
+- The web console's System → Subagent models panel writes this to `novabot.json`

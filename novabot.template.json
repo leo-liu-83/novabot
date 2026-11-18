@@ -74,7 +74,11 @@
     },
     "agent": {
         "model": "deepseek/deepseek-flash",
-        "max_steps": 50
+        "max_steps": 50,
+        "subagents": {
+            "explore": {"model": ""},
+            "general": {"model": ""}
+        }
     },
     "exec": {
         "level": "T2"

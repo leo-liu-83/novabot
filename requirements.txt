@@ -19,3 +19,5 @@ PyYAML==6.0.3
 firecrawl-anydoc==0.2.4
 # 发送前压图（附件重复发送治理）：长边 2000 / base64 5 MiB。纯二进制 wheel，多平台可用
 pillow==11.3.0
+# 配置里 API Key 的加密存储（SM3-KDF + SM4-CBC）。只用 sm3/sm4 两个纯 Python 模块
+gmssl==3.2.2

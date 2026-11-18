@@ -37,7 +37,7 @@ positional: tui | repl | web
 | `/new` | 开启新会话 |
 | `/session` | 切换会话 |
 | `/model` | 切换模型 |
-| `/think` | 思考模式：on / off / auto |
+| `/think` | 思考档位：off / low / medium / high / auto（按当前模型支持的档位裁剪） |
 | `/compact` | 手动压缩上下文 |
 | `/lang` | 切换中文 / English |
 | `/help` | 显示全部命令 |
@@ -112,7 +112,7 @@ positional: tui | repl | web
 | 账号 | 密码、头像、数据统计 |
 | 用户与授权 | 管理员管理账号、天花板、配额、MCP 授权 |
 | 全局搜索 | 管理员维护全局 provider |
-| 项目 | 项目列表与项目内会话；创建 / 改名 / 归档；编辑或生成项目 `AGENTS.md` |
+| 项目 | 项目列表与项目内会话；创建 / 改名 / 归档；编辑或生成项目 `AGENTS.md`；目录缺 `.novabot/notes` 或 `AGENTS.md` 时可一键补齐；TUI 的 `/project` 支持 `Ctrl+D` 删除（可选只删登记或连 `.novabot`、`AGENTS.md` 一起清） |
 | 系统信息 | 诊断信息；模型目录里可切换 agent 默认模型 |
 
 Web 与 TUI 共用账号、会话和消息。

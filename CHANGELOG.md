@@ -3,6 +3,41 @@
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，规则见 [版本与发布](docs/versioning.md)。
 本文件只记录对外可见的变化；内部开发过程与提交历史不在其中。
 
+## 0.3.0 — 2026-11-18
+
+### 新增
+
+- 内置子代理：`explore`（只读探索）与 `general`（执行），主 agent 通过 `task` 分派；
+  子代理在独立上下文运行，只回传结论
+- 子代理可单独配置模型（跟随会话或指定），Web 系统信息页提供「子代理模型」面板
+- 子代理用量按角色记入 `usage_events`，报表可区分主 agent 与子代理
+- 并发闸门：全局 3 / `general` 每会话 1 / 单轮 6 次 / 活跃段 5 分钟 / 排队 60 秒
+- 分派原则用可数阈值（预计读 3 个以上文件、跨 2 个以上目录就先派 `explore`）：实测
+  「需要读很多文件」这类模糊表述模型不会派，改成可数口径后同一句提问就会派
+- 思考从布尔开关升级为档位：`off` / `low` / `medium` / `high`，会话里 `/think`（TUI）
+  或头部 `think` 芯片（Web）切换，`auto` 表示跟随模型默认
+- 新增请求写法 `reasoning_effort` 与 `thinking_level`（含 `none` = 不发任何思考字段），
+  覆盖 OpenAI GPT-5.x、DeepSeek、Gemini 3 等只有档位的模型；DeepSeek 可组合
+  `thinking_type+reasoning_effort`
+- 模型配置新增 `thinking_default` / `thinking_levels` / `thinking_off_value`；
+  `/think` 与 Web 只列出当前模型支持的档位
+- 会话新增 `thinking_level` 列（老 `thinking` 布尔列继续双写，老客户端仍可用）
+- 模型目录接口返回 `thinking_default` 与 `thinking_levels`
+
+### 变更
+
+- OpenAI 官方端点默认改发 `reasoning_effort`：再发 `enable_thinking` 会被 400 拒绝
+- 老配置与老接口继续可用：`enable_thinking: true/false` 等价于 `medium` / `off`
+
+### 修复
+
+- 非流式响应回填 `usage`，非流式调用的用量不再恒为 0
+- 思考写法拼错在装配期就报错，不再让端点静默忽略（"以为关了其实还在烧 token"）
+- opencode.ai 网关按 `reasoning_effort` 识别（实测它忽略 `enable_thinking`，`none` 才真关掉推理）；
+  动态发现出来的模型默认 `auto`（不发思考字段），不会被悄悄改成"关思考"
+- 动态发现型 provider 支持在 provider 级配置 `thinking_style` / `thinking_default` /
+  `thinking_levels` / `thinking_off_value`，网关下的每个模型都能选档位
+
 ## 0.2.2 — 2026-11-15
 
 ### 新增

@@ -21,7 +21,8 @@ from textual.widgets.option_list import Option
 
 from config import config
 from exception.user_exception import AuthError
-from service.model_catalog import model_catalog
+from core.llm.thinking import normalize_level
+from service.model_catalog import model_catalog, thinking_options
 from ..widgets import CustomTextArea
 from .auth import (
     DELETE_ACCOUNT_STEPS,
@@ -47,12 +48,16 @@ from .input_screen import InputScreen
 from .select_screen import ConfirmScreen, SelectScreen
 from util.text_utils import get_text_width
 from .sessions import SessionEntry, delete_session_wait, join_project
+from service.session.approvals import clear_session
 from .projects import (
     create_current_project,
     current_directory,
+    delete_current_project,
     project_at_current,
     project_error_text,
+    project_files_missing,
     rename_project,
+    repair_project_files,
     visible_project_commands,
 )
 from service.project.errors import ProjectError
@@ -163,17 +168,21 @@ COMMON_COMMANDS: list[tuple[str, str]] = [
     ("/new", "开启新会话"),
     ("/session", "切换会话（弹窗选择）"),
     ("/model", "切换模型（弹窗选择）"),
-    ("/think", "深度思考模式（弹窗选择：on/off/auto）"),
+    ("/think", "思考档位（弹窗选择：off/low/medium/high/auto）"),
     ("/compact", "手动压缩上下文（摘要旧消息）"),
     ("/lang", "切换界面语言（中文 / English）"),
 ]
 
-# 思考模式：on=强制开启，off=强制关闭，auto=跟随模型定义
+# 思考档位：off/low/medium/high 是统一语义，具体请求字段由 core/llm/thinking.py 翻译；
+# auto = 不覆盖，跟着模型定义的默认档位
 THINK_MODES: list[tuple[str, str]] = [
-    ("on", "强制开启 · 每次请求都带思考开关，并显示思考内容"),
-    ("off", "强制关闭 · 不请求思考，也不显示思考内容"),
-    ("auto", "跟随模型定义 · 由模型自身配置决定"),
+    ("off", "关闭 · 不请求思考"),
+    ("low", "低 · 轻量推理"),
+    ("medium", "中 · 常规任务"),
+    ("high", "高 · 复杂推理"),
+    ("auto", "跟随模型默认"),
 ]
+THINK_LABELS = dict(THINK_MODES)
 
 # 脚本执行档位：配置为默认 + 会话内临时调整（不写配置文件）
 # 技能安全审查：统一成一条命令，选中后弹窗逐级操作（见_open_skill_review）
@@ -381,7 +390,7 @@ class CommandMixin(Screen):
     /命令面板：输入/唤出过滤列表，up/down选择、enter确认、esc关闭。
 
     宿主Screen需提供：
-      self.model / self.enable_thinking 状态，_cmd_input_id 输入框id，
+      self.model / self.thinking_level 状态，_cmd_input_id 输入框id，
       compose中yield self.compose_command_popup()，on_mount中调用 self.bind_command_input()，
       并实现 current_model / do_new_session / do_switch_session / mount_notice / mount_help
     """
@@ -516,11 +525,14 @@ class CommandMixin(Screen):
             # 无参开弹窗，带参直接设（与/model同形）；认不出的取值报错而不是静默变auto
             if len(parts) > 1:
                 arg = parts[1].lower()
-                if arg not in ("on", "off", "auto"):
-                    await self.mount_notice(t(t(t('未知的思考模式 `{}`。可用：on / off / auto')), arg))
+                try:
+                    level = normalize_level(arg)
+                except ValueError:
+                    await self.mount_notice(t(t(t(
+                        '未知的思考档位 `{}`。可用：off / low / medium / high / auto')), arg))
                     return True
 
-                self.enable_thinking = {"on": True, "off": False, "auto": None}[arg]
+                self.thinking_level = level
                 self._refresh_cmd_status()
             else:
                 self._open_think_picker()
@@ -665,15 +677,16 @@ class CommandMixin(Screen):
             # 8.2.8 OptionList无分组能力：组标题用disabled行（游标自动跳过），provider之间插空行
             if idx > 0:
                 items.append(Option(Text(" "), disabled=True))
-            items.append(Option(Text(f" {name} ({code})", style="bold cyan"), disabled=True))
+            # provider 顶格、模型缩进两格：标题是分组框，模型才是可选内容
+            items.append(Option(Text(f"{name} ({code})", style="bold cyan"), disabled=True))
             for m, usable in models:
                 # 无密钥的模型可见但禁用（游标导航自动跳过disabled项）
                 if m == current:
-                    parts = [(m, "bold"), (t(t(t("   ←  当前"))), "green")]
+                    parts = [(f"  {m}", "bold"), (t(t(t("   ←  当前"))), "green")]
                 elif usable:
-                    parts = [(m, "bold")]
+                    parts = [(f"  {m}", "bold")]
                 else:
-                    parts = [(m, "dim"), (t(t(t("   未配置密钥"))), "red")]
+                    parts = [(f"  {m}", "dim"), (t(t(t("   未配置密钥"))), "red")]
                 # 搜索词同时匹配模型 id 与 provider 显示名，输入 “百炼” 也能找到
                 items.append((m, Text.assemble(*parts), not usable, f"{m} {name}"))
 
@@ -690,24 +703,27 @@ class CommandMixin(Screen):
             self.model = value
             self._refresh_cmd_status()
 
-    # 思考模式弹窗：三档互斥，标注当前档（同/model的弹窗形态）
+    # 思考档位弹窗：按当前模型能表达的档位裁剪，避免给出三个看起来一样的选项
     def _open_think_picker(self) -> None:
-        current = "on" if self.enable_thinking is True else (
-            "off" if self.enable_thinking is False else "auto")
+        current = self.thinking_level or "auto"
+        options = thinking_options(self.current_model())["levels"]
 
         items: list = []
         for mode, desc in THINK_MODES:
+            if mode != "auto" and mode not in options:
+                continue
+            # 当前标记放在描述之后：档位名与说明先读，标记只做收尾，避免中文行被挤换行
+            parts = [(f"{mode:<6} ", "bold green" if mode == current else "bold"),
+                     (t(desc), "dim")]
             if mode == current:
-                parts = [(mode, "bold green"), (t(t(t("   ←  当前"))), "green")]
-            else:
-                parts = [(mode, "bold")]
-            items.append((mode, Text.assemble(*parts, (f"   {t(desc)}", "dim"))))
+                parts.append((f"  {t('← 当前')}", "green"))
+            items.append((mode, Text.assemble(*parts)))
 
-        self.app.push_screen(SelectScreen(t(t(t("深度思考"))), items), self._on_think_picked)
+        self.app.push_screen(SelectScreen(t(t(t("思考档位"))), items), self._on_think_picked)
 
     def _on_think_picked(self, value: Optional[str]) -> None:
         if value:
-            self.enable_thinking = {"on": True, "off": False, "auto": None}[value]
+            self.thinking_level = None if value == "auto" else value
             self._refresh_cmd_status()
 
     # 会话按最后活动时间倒序，value直接用session_id
@@ -786,85 +802,174 @@ class CommandMixin(Screen):
         return changed
 
     async def _open_project(self) -> None:
-        """项目弹窗：当前目录创建 / 已有项目改名；TUI 不提供删除与改目录。"""
+        """项目弹窗：当前目录没项目就直接填名字创建；已有项目时 Enter 改名、Ctrl+D 删除。"""
         ctx = get_current_ctx()
         if not ctx.can_projects:
             await self.mount_notice(t("项目功能未开通"))
             return
 
+        existing = project_at_current(ctx.uid)
+        if existing is None:
+            await self._create_project_dialog(ctx, current_directory())
+            return
+
         while True:
             current = current_directory()
             existing = project_at_current(ctx.uid)
-            items: list = []
             if existing is None:
+                # 上一轮把它删了：不要再弹一个空列表
+                return
+
+            # 只展示当前目录的项目：其它目录的项目不应出现在这里
+            items: list = [(
+                existing["id"],
+                Text.assemble(
+                    (existing["name"], "bold"),
+                    (f"  {existing.get('path') or ''}", "dim"),
+                ),
+                False,
+                f"{existing['name']} {existing.get('path') or ''}",
+            )]
+            # 目录被删掉重建、或项目登记得比这套功能早时，.novabot 与 AGENTS.md 可能不在：
+            # 不给入口的话，用户只会看到“项目存在”却怎么都找不到这两个东西。
+            missing = project_files_missing(existing)
+            if missing:
                 items.append((
-                    "__create__",
-                    Text.assemble((t("＋ 创建当前目录的项目"), "bold"), (f"  {current}", "dim")),
-                    False,
-                    f"{t('创建项目')} {current}",
-                ))
-            else:
-                # 只展示当前目录的项目：其它目录的项目不应出现在这里
-                items.append((
-                    existing["id"],
+                    "__repair__",
                     Text.assemble(
-                        (existing["name"], "bold"),
-                        (f"  {existing.get('path') or ''}", "dim"),
+                        (t("＋ 补齐项目文件"), "bold"),
+                        (f"  {'、'.join(missing)}", "dim"),
                     ),
                     False,
-                    f"{existing['name']} {existing.get('path') or ''}",
+                    f"{t('补齐项目文件')} {' '.join(missing)}",
                 ))
 
-            value = await self.app.push_screen_wait(SelectScreen(
+            picker: SelectScreen
+
+            def on_delete(value: str) -> None:
+                """Ctrl+D：把删除请求带回本轮循环处理，确认框与主流程排在同一条线上。"""
+                if value != existing["id"]:
+                    picker.set_hint_error(t("只有当前项目可以删除"))
+                    return
+                picker.dismiss("__delete__")
+
+            picker = SelectScreen(
                 t("项目"), items,
-                selected=existing["id"] if existing else None,
-                hint=t("↑↓ 选择    Enter 确认    Esc 取消"),
-            ))
+                selected=existing["id"],
+                hint=t("↑↓ 选择    Enter 重命名    Ctrl+D 删除    Esc 取消"),
+                on_delete=on_delete,
+            )
+            value = await self.app.push_screen_wait(picker)
             if not value:
                 return
 
-            if value == "__create__":
-                default_name = os.path.basename(current.rstrip(os.sep)) or t("新项目")
-                values = await self.app.push_screen_wait(InputScreen(
-                    t("创建项目"),
-                    [("name", t("项目名称"), False)],
-                    initial={"name": default_name},
+            if value == "__delete__":
+                # 删登记与删文件分开问：AGENTS.md 可能是用户手写的，不能默认一起删
+                choice = await self.app.push_screen_wait(SelectScreen(
+                    t("删除项目「{}」", existing["name"]),
+                    [
+                        ("record", Text(t("仅删除项目登记（目录里的文件保留）")), False,
+                         t("仅删除项目登记")),
+                        ("files", Text(t("同时清理 .novabot 与 AGENTS.md")), False,
+                         t("同时清理项目文件")),
+                    ],
+                    selected="record",
+                    hint=t("↑↓ 选择    Enter 确认    Esc 取消"),
                 ))
-                if not values:
+                if not choice:
                     continue
                 try:
-                    row, agents_state = create_current_project(ctx.uid, values["name"].strip())
+                    row = delete_current_project(
+                        ctx.uid, existing["id"], remove_files=(choice == "files"))
                 except ProjectError as exc:
                     await self.mount_notice(t(project_error_text(exc)))
                     continue
-                joined = self._bind_current_session_to(row)
-                if agents_state is None:
-                    message = t("已创建项目 {}，并生成 AGENTS.md", row["name"])
-                elif agents_state == "exists":
-                    message = t("已创建项目 {}；目录已有 AGENTS.md，未覆盖", row["name"])
+                self._forget_deleted_project(ctx.uid, row["id"])
+                removed = row.get("removed") or []
+                if choice != "files":
+                    await self.mount_notice(t("已删除项目 {}（目录里的文件保留）", row["name"]))
+                elif removed:
+                    await self.mount_notice(t("已删除项目 {}；清理了 {}", row["name"], "、".join(removed)))
                 else:
-                    message = t("已创建项目 {}，但生成 AGENTS.md 失败", row["name"])
-                if joined:
-                    message += t("；当前会话已转入项目")
-                await self.mount_notice(message)
+                    await self.mount_notice(t("已删除项目 {}（目录里没有可清理的项目文件）", row["name"]))
+                return
+
+            if value == "__repair__":
+                try:
+                    done = repair_project_files(existing)
+                except ProjectError as exc:
+                    await self.mount_notice(t(project_error_text(exc)))
+                    continue
+                await self.mount_notice(
+                    t("已补齐项目文件：{}", "、".join(done)) if done else t("项目文件已齐全"))
                 continue
 
-            project = existing if existing and value == existing["id"] else None
-            if project is None:
-                continue
             values = await self.app.push_screen_wait(InputScreen(
                 t("重命名项目"),
                 [("name", t("项目名称"), False)],
-                initial={"name": project["name"]},
+                initial={"name": existing["name"]},
             ))
             if not values:
                 continue
+            new_name = values["name"].strip()
+            if new_name == existing["name"]:
+                # 原样回车是最常见的误操作：别报“已重命名”，那会让人以为已经重建了项目
+                await self.mount_notice(t("项目名称未变更"))
+                continue
             try:
-                row = rename_project(ctx.uid, project["id"], values["name"].strip())
+                row = rename_project(ctx.uid, existing["id"], new_name)
             except ProjectError as exc:
                 await self.mount_notice(t(project_error_text(exc)))
                 continue
             await self.mount_notice(t("项目已重命名为 {}", row["name"]))
+
+    @staticmethod
+    def _shorten_path(path: str, limit: int = 48) -> str:
+        """弹窗标题里的路径：太长就中段省略，保留首尾（根与最后一级目录都看得见）。"""
+        if len(path) <= limit:
+            return path
+        head = (limit - 1) // 2
+        return f"{path[:head]}…{path[-(limit - 1 - head):]}"
+
+    async def _create_project_dialog(self, ctx, current: str) -> None:
+        """没有项目时直接给输入框：目录就是当前目录，名称默认取目录名。"""
+        default_name = os.path.basename(current.rstrip(os.sep)) or t("新项目")
+        values = await self.app.push_screen_wait(InputScreen(
+            t("创建项目（{}）", self._shorten_path(current)),
+            [("name", t("项目名称"), False)],
+            initial={"name": default_name},
+        ))
+        if not values:
+            return
+        try:
+            row, agents_state = create_current_project(ctx.uid, values["name"].strip())
+        except ProjectError as exc:
+            await self.mount_notice(t(project_error_text(exc)))
+            return
+
+        joined = self._bind_current_session_to(row)
+        if agents_state is None:
+            message = t("已创建项目 {}，并生成 AGENTS.md", row["name"])
+        elif agents_state == "exists":
+            message = t("已创建项目 {}；目录已有 AGENTS.md，未覆盖", row["name"])
+        else:
+            message = t("已创建项目 {}，但生成 AGENTS.md 失败", row["name"])
+        if joined:
+            message += t("；当前会话已转入项目")
+        await self.mount_notice(message)
+
+    def _forget_deleted_project(self, uid: str, project_id: str) -> None:
+        """项目删掉后，当前会话的缓存还挂着它：不清就会继续显示已删项目的目录。"""
+        session = getattr(self, "_session", None)
+        if not isinstance(session, dict) or session.get("project_id") != project_id:
+            return
+        session["project_id"] = None
+        session["project_name"] = None
+        session["project_path"] = None
+        clear_session(uid, session.get("id") or "")
+        refresh = getattr(self, "_refresh_cmd_status", None)
+        if callable(refresh):
+            refresh()
 
     # Ctrl+D：当前会话拒绝删除（弹窗内红字提示），其余弹确认框
     def _request_session_delete(self, session_id: str) -> None:

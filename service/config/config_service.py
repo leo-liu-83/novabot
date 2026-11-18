@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Optional
 
 from util.base import base_util
+from util.secrets import SecretError, SecretStore, is_ciphertext
 from exception.config_exception import ConfigFilesError
 from .dtos import *
 
@@ -47,10 +48,41 @@ def _headers(value) -> Optional[dict]:
     return headers or None
 
 
+def _subagents(value) -> Optional[dict]:
+    """agent.subagents 解析：只认字典；每个角色只取 model 字符串，其他键忽略。
+
+    空串是显式取值（跟随会话模型），必须原样保留——见 SubagentDto 的说明。
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, SubagentDto] = {}
+    for role, item in value.items():
+        if not isinstance(item, dict):
+            continue
+        model = item.get("model", "")
+        out[str(role)] = SubagentDto(model=str(model).strip() if isinstance(model, str) else "")
+    return out or None
+
+
+def _merge_subagents(base: Optional[dict], user: Optional[dict]) -> Optional[dict]:
+    """逐角色合并：用户出现的角色覆盖同名内置角色，用户没出现的角色保留内置值。
+
+    用户显式写 "" 表示"跟随会话模型"，要覆盖掉内置的非空值，不能被当成缺省丢掉。
+    """
+    if user is None:
+        return base
+    merged = dict(base or {})
+    merged.update(user)
+    return merged or None
+
+
 class ConfigService:
-    def __init__(self, user_config_path: str):
+    def __init__(self, user_config_path: str, secret_db_path: Optional[str]=None):
         self.base_config_path = f"{base_util.root_path}/config/config.json"
         self.user_config_path = user_config_path
+        # 配置在 import 期就被读取，解密必须"失败也不抛"：抛出去会让 CONFIG_DATA 变成 None，
+        # 整个应用直接不可用。解不开的值保留密文，由使用点报明确错误（见 model_catalog / llm_manager）
+        self._secrets = SecretStore(secret_db_path)
 
     def load(self):
         config = None
@@ -66,7 +98,14 @@ class ConfigService:
 
             # 用户配置文件可选，存在则加载
             if self.user_config_path and os.path.exists(self.user_config_path):
-                user_config = self._json_to_dto(self.user_config_path)
+                try:
+                    user_config = self._json_to_dto(self.user_config_path)
+                except Exception as exc:  # noqa: BLE001 - 坏配置只丢弃用户那份，内置照常可用
+                    # 外层 except 会连内置配置一起丢掉，用户只会看到"模型都没了"；
+                    # 这里点名文件与原因，至少能照着改
+                    print(f"[CONFIG] 用户配置 {self.user_config_path} 解析失败，已忽略：{exc}",
+                          file=sys.stderr)
+                    user_config = None
 
                 # 如果有用户配置文件，添加用户配置的供应商
                 # llm加载模型时取同code的最后一个供应商，用户配置天然覆盖内置配置
@@ -86,6 +125,10 @@ class ConfigService:
                 # LLM默认参数：用户显式给出才覆盖内置值
                 if user_config and user_config.llm and user_config.llm.max_input_tokens is not None:
                     config.llm = user_config.llm
+
+                # 项目：只取 web_roots（None=未配置，保持"仅 workspace"）
+                if user_config and user_config.projects and user_config.projects.web_roots is not None:
+                    config.projects = ProjectsDto(web_roots=list(user_config.projects.web_roots or []))
 
                 # 附件限制逐字段合并：用户只改一个值时，其余继续用内置默认
                 if user_config and user_config.attachments:
@@ -114,6 +157,11 @@ class ConfigService:
                     config.agent = AgentDto(
                         model=user_config.agent.model or (base_agent.model if base_agent else ""),
                         max_steps=user_steps if user_steps is not None else base_steps,
+                        # 逐角色合并：用户只配了 explore 时，内置的 general 不能被整段丢掉
+                        subagents=_merge_subagents(
+                            base_agent.subagents if base_agent else None,
+                            user_config.agent.subagents,
+                        ),
                     )
 
                 # 网络能力：逐字段合并。search.providers是**系统内置档**（只在config.json里定义），
@@ -149,6 +197,16 @@ class ConfigService:
 
         return config
 
+    def _reveal_secret(self, value: Optional[str], label: str) -> Optional[str]:
+        if not value or not is_ciphertext(value):
+            return value
+        try:
+            return self._secrets.reveal(value)
+        except SecretError as exc:
+            # 配置加载早于日志系统就绪，只能打 stderr
+            print(f"[CONFIG] {label} 解密失败：{exc}（保留密文）", file=sys.stderr)
+            return value
+
     # json文件转dto
     def _json_to_dto(self, config_file: str) -> Optional[ConfigDto]:
         if not config_file or not os.path.exists(config_file):
@@ -171,11 +229,16 @@ class ConfigService:
                             name=pv.get("name", ""),
                             base_url=pv.get("base_url", ""),
                             api=pv.get("api", ""),
-                            api_key=pv.get("key", "") or pv.get("api_key", ""),
+                            api_key=self._reveal_secret(
+                                pv.get("key", "") or pv.get("api_key", ""), f"models.{pk}"),
                             host=pv.get("host", ""),
                             headers=_headers(pv.get("headers", None)),
                             dynamic_models=pv.get("dynamic_models", False) is True,
                             models_url=str(pv.get("models_url", "") or "").strip(),
+                            thinking_style=pv.get("thinking_style", None),
+                            thinking_default=pv.get("thinking_default", None),
+                            thinking_levels=pv.get("thinking_levels", None),
+                            thinking_off_value=pv.get("thinking_off_value", None),
                             models=[]
                         )
 
@@ -189,6 +252,9 @@ class ConfigService:
                                     name=jm.get("name", ""),
                                     stream=jm.get("stream", True),
                                     enable_thinking=jm.get("enable_thinking", False),
+                                    thinking_default=jm.get("thinking_default", None),
+                                    thinking_levels=jm.get("thinking_levels", None),
+                                    thinking_off_value=jm.get("thinking_off_value", None),
                                     num_ctx=jm.get("num_ctx", 0),
                                     max_output_tokens=jm.get("max_output_tokens", None),
                                     cost=self._json_to_cost_dto(jm.get("cost", None)),
@@ -230,6 +296,7 @@ class ConfigService:
                     agent = AgentDto(
                         model=j_agent.get("model", ""),
                         max_steps=int(raw_max) if isinstance(raw_max, int) and raw_max > 0 else None,
+                        subagents=_subagents(j_agent.get("subagents", None)),
                     )
 
                     config.agent = agent
@@ -238,6 +305,14 @@ class ConfigService:
                 j_exec = jdata.get("exec", None)
                 if isinstance(j_exec, dict):
                     config.exec = ExecDto(level=j_exec.get("level", None))
+
+                # 项目：Web 端可登记目录的额外白名单
+                j_projects = jdata.get("projects", None)
+                if isinstance(j_projects, dict):
+                    raw_roots = j_projects.get("web_roots", None)
+                    if isinstance(raw_roots, list):
+                        config.projects = ProjectsDto(
+                            web_roots=[str(item) for item in raw_roots if str(item).strip()])
 
                 # 网络能力：缺省留None，交由base_config决定默认值
                 j_web = jdata.get("web", None)
@@ -249,7 +324,9 @@ class ConfigService:
                             enabled=j_search.get("enabled"),
                             providers=[WebSearchProviderDto(
                                 provider=p.get("provider", ""),
-                                key=p.get("key") or p.get("api_key"),
+                                key=self._reveal_secret(
+                                    p.get("key") or p.get("api_key"),
+                                    f"web.search.providers[{p.get('provider', '')}]"),
                                 endpoint=p.get("endpoint"),
                             ) for p in (j_search or {}).get("providers", []) if isinstance(p, dict)],
                         ) if isinstance(j_search, dict) else None,

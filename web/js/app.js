@@ -213,7 +213,8 @@
   function identityHTML(me) {
     const r = me.role;
     const name = r === 'anon' ? I.t('auth.login') : r === 'setup' ? I.t('首次启动') : me.name;
-    const desc = r === 'anon' ? I.t('auth.login') : r === 'setup' ? I.t('还没有管理员') : U.roleName(r) + ' · ' + U.modeLabel(me.mode);
+    // 侧边栏不展示部署模式：Web 只跑多用户，这行恒真、没有信息量
+    const desc = r === 'anon' ? I.t('auth.login') : r === 'setup' ? I.t('还没有管理员') : U.roleName(r);
     return '<span class="identity-avatar">' + U.avatarInner(name, me.avatar) + '</span>' +
       '<span class="identity-meta"><span class="identity-name">' + U.esc(name) + '</span>' +
         '<span class="identity-role">' + U.esc(desc) + '</span></span>' +
@@ -263,7 +264,10 @@
       const existing = previous.get(row.id);
       return Object.assign(existing || { messages: [], uploads: [], _loaded: false, _hasMore: false, _beforeId: null }, {
         id: row.id, title: row.title || I.t('chat.new'), model: row.model || null,
-        thinking: row.thinking == null ? null : row.thinking,
+        // 档位优先；老接口只有 thinking 布尔时按 true=medium / false=off 折算
+        thinkingLevel: row.thinking_level != null
+          ? row.thinking_level
+          : (row.thinking == null ? null : (row.thinking ? 'medium' : 'off')),
         projectId: row.project_id || null, projectName: row.project_name || null,
         projectPath: row.project_path || null,
         level: row.exec_level || (existing && existing.level) || mock.ui.defaultLevel,
@@ -284,12 +288,21 @@
     const models = (result.providers || []).flatMap((p) => (p.models || []).map((m) => ({
       id: m.id, name: m.name, provider: p.name || p.code, providerCode: p.code,
       thinking: m.enable_thinking, ctx: m.num_ctx, configured: m.configured,
+      // 老服务端没有这个字段时给全档，别把 low/high 藏掉
+      thinkingLevels: m.thinking_levels || ['off', 'low', 'medium', 'high'],
+      thinkingDefault: m.thinking_default || (m.enable_thinking ? 'medium' : 'off'),
     })));
-    if (models.length) mock.models = models;
+    // 即使为空也要覆盖：mock 只是首帧占位，空目录时留着它会让用户
+    // 看到根本不存在的 provider（"阿里云百炼"/"本地网关"就是 mock 里的示例）
+    mock.models = models;
+    mock.modelProviders = (result.providers || []).map((p) => ({
+      code: p.code, name: p.name || p.code, count: (p.models || []).length,
+    }));
+    mock.discoveryErrors = result.discovery_errors || {};
     NB.app.defaultModel = result.default_model || (models[0] && models[0].id) || '';
     mock.ui.defaultModel = NB.app.defaultModel;
     const defaultModel = models.find((m) => m.id === NB.app.defaultModel);
-    if (defaultModel) mock.ui.defaultThinking = !!defaultModel.thinking;
+    if (defaultModel) mock.ui.defaultThinkingLevel = defaultModel.thinkingDefault;
   }
 
   async function loadQuota() {
@@ -318,8 +331,8 @@
     }
   }
 
-  async function createSession(model, thinking, projectId) {
-    const selectedThinking = thinking == null ? mock.ui.defaultThinking : thinking;
+  async function createSession(model, thinkingLevel, projectId) {
+    const selectedThinking = thinkingLevel == null ? mock.ui.defaultThinkingLevel : thinkingLevel;
     const created = await NB.api.createSession(model || NB.app.defaultModel || undefined, selectedThinking, projectId);
     const session = {
       id: created.id, title: created.title || I.t('chat.new'),
@@ -327,7 +340,7 @@
       projectId: created.project_id || projectId || null,
       projectName: created.project_name || null,
       projectPath: created.project_path || null,
-      thinking: created.thinking == null ? selectedThinking : created.thinking,
+      thinkingLevel: created.thinking_level == null ? selectedThinking : created.thinking_level,
       level: created.exec_level || mock.ui.defaultLevel, updatedAt: new Date((created.updated_at || 0) * 1000).toISOString(),
       tokensIn: created.tokens_in || 0, tokensOut: created.tokens_out || 0,
       speed: created.speed || 0,
@@ -562,7 +575,7 @@
       syncRailChrome();
       bindRailTips();
       const brandSub = document.getElementById('brand-sub');
-      brandSub.textContent = mock.mode === 'single' ? 'LOCAL CONSOLE · SINGLE' : 'CONTROL CONSOLE · MULTI';
+      brandSub.textContent = 'CONTROL CONSOLE';
       document.getElementById('topbar-tools').innerHTML = topbarHTML(me);
       bindTopbar(me);
       document.getElementById('rail').setAttribute('aria-label', I.t('主导航'));

@@ -50,6 +50,8 @@ ERRORS: Dict[str, Tuple[int, str]] = {
     "project.path_invalid": (400, "项目路径不可用：{reason}"),
     "project.path_forbidden": (403, "不能把该目录登记为项目：{path}"),
     "project.path_nested": (409, "该目录与已有项目目录重叠"),
+    "project.path_allowed_roots": (
+        403, "Web 端只能登记 workspace 与配置的额外根目录下的项目：{path}"),
     "project.path_unavailable": (409, "项目目录已失效或被移动到别处：{path}"),
     "project.archived": (409, "项目已归档"),
     "project.agents_exists": (409, "项目根目录已有 AGENTS.md，不会覆盖"),
@@ -92,6 +94,7 @@ ERRORS: Dict[str, Tuple[int, str]] = {
 
     # 模型目录 / 默认模型
     "model.not_found": (404, "当前模型目录里没有这个模型：{model}"),
+    "model.role_not_found": (404, "没有这个子代理角色：{role}"),
     "model.config_invalid": (409, "用户配置文件无法解析，请先修好 novabot.json 再设置默认模型"),
     "model.write_failed": (500, "写入 novabot.json 失败"),
 

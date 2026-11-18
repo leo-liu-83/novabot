@@ -5,6 +5,7 @@
 
 import os
 import sqlite3
+import stat
 import threading
 from typing import Optional
 
@@ -37,7 +38,15 @@ class SqliteService:
             return self._fixed_db_path
 
         path = config.db_file_path()
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        directory = os.path.dirname(path) or "."
+        if not os.path.isdir(directory):
+            os.makedirs(directory, exist_ok=True)
+            # 库里有主密钥与密文：目录不给其他用户遍历
+            if os.name == "posix":
+                try:
+                    os.chmod(directory, stat.S_IRWXU)
+                except OSError:
+                    pass
         return path
 
     def _connection(self) -> sqlite3.Connection:
@@ -53,6 +62,14 @@ class SqliteService:
             self._conn = None
 
         conn = sqlite3.connect(path, check_same_thread=False, timeout=5.0)
+        if os.name == "posix":
+            # 主密钥就在这个库里：文件权限是最后一道边界。
+            # 这里对存量安装也生效（目录可能是旧版本用默认权限建的）
+            try:
+                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+                os.chmod(os.path.dirname(path) or ".", stat.S_IRWXU)
+            except OSError:
+                pass
         conn.row_factory = sqlite3.Row
         self._conn = conn
         self._conn_path = path

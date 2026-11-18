@@ -110,6 +110,26 @@ were found but cannot be run, separating "not installed" from "installed but unu
 - Model does not support `enable_thinking`
 - The aggregator forwards an unsupported parameter upstream
 
+### "Key cannot be decrypted: master key missing or mismatched"
+
+- The config holds ciphertext (`enc:v1:sm4:...`) but `~/.novabot/data/novabot.db` has no master
+  key — typically when only the config was copied. Restore the original master key and restart
+- After changing the master key, re-encrypt with `init --rotate` instead of editing the DB
+- If the master key is truly lost, re-enter each provider key:
+  `python -m util.secret_cli init --force --config ~/.novabot/novabot.json --data-dir ~/.novabot/data`
+  (it lists the entries it cannot decrypt)
+- Check state with `python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.novabot/data`
+
+### Thinking toggle does nothing (cannot turn off / on)
+
+- The endpoint expects a different style: a common case is Qwen behind a LAN/remote vLLM that
+  only understands `chat_template_kwargs.enable_thinking`, while the default only sends top-level
+  `enable_thinking` → set `"thinking_style": "enable_thinking+template_kwargs"` on the model or
+  provider
+- Verify with `/think`; this boolean style only offers `off` / `medium`
+- To see the actual fields, raise the log level to DEBUG; the "thinking request fields" line
+  lists only the thinking keys (no message body or secrets)
+
 ### Context compacts too early
 
 - `num_ctx` is too small

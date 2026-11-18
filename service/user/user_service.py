@@ -682,8 +682,17 @@ class UserService(SqliteService):
         ), self.issue_token(uid, ttl_seconds=self._ttl_for(remember))
 
     def login(self, username: str, password: str, *, remember: bool=True) -> tuple[UserCtx, str]:
-        rows = self._query("SELECT uid, username, pass_hash, is_admin FROM users WHERE username = ?", ((username or "").strip(),))
-        if not rows or not verify_password(password, rows[0]["pass_hash"]):
+        name = (username or "").strip()
+        rows = self._query("SELECT uid, username, pass_hash, is_admin FROM users WHERE username = ?", (name,))
+        # 客户端一律回"密码错误"（不暴露账号是否存在），但日志必须说清楚：
+        # 连到另一个库（root 装、普通用户跑）时，表现就是"密码怎么都不对"
+        matched = bool(rows) and verify_password(password, rows[0]["pass_hash"])
+        if not rows:
+            total = self._query("SELECT COUNT(*) AS n FROM users")[0]["n"]
+            logger.warning(f"登录失败：账号不存在（{name!r}）；当前库 {self.db_path} 共 {total} 个账号")
+        elif not matched:
+            logger.warning(f"登录失败：密码不匹配（{name!r}）；当前库 {self.db_path}")
+        if not matched:
             raise AuthError(msg.MSG_AUTH_PASSWORD_INVALID, code="auth.password_wrong")
 
         uid = rows[0]["uid"]

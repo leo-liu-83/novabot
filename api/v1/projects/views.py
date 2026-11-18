@@ -13,6 +13,7 @@ from service.project.agents import (
     build_agents_draft, delete_agents_file, generate_agents_with_model,
     read_agents_file, write_agents_draft,
 )
+from service.project.paths import ensure_project_folder, web_allowed_roots
 from service.project.project_service import project_service
 from service.user.user_service import UserCtx
 
@@ -21,7 +22,9 @@ router = APIRouter(prefix="/projects")
 
 class CreateProjectSchema(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    path: str = Field(min_length=1)
+    # Web 选择器给 parent（父目录）+ name；path 保留给老客户端/脚本
+    parent: Optional[str] = Field(default=None, min_length=1)
+    path: Optional[str] = Field(default=None, min_length=1)
     # 长度由服务层校验：pydantic 的 422 文案没有 error code，前端翻译不了
     description: str = ""
     skills: list[dict] = Field(default_factory=list)
@@ -58,9 +61,15 @@ async def list_projects(ctx: UserCtx = Depends(resolve_user_ctx)) -> Any:
 async def create_project(input: CreateProjectSchema,
                          ctx: UserCtx = Depends(resolve_user_ctx)) -> Any:
     _require_projects(ctx)
+    if not input.parent and not input.path:
+        raise api_error("project.path_invalid", reason="缺少项目目录")
     try:
-        row = project_service.create(ctx.uid, input.name, input.path, input.skills,
-                                     input.description)
+        roots = web_allowed_roots(ctx.uid)
+        # Web 的选择器给的是"父目录 + 项目名"：实际目录 = 父目录/项目名，缺则创建
+        path = (ensure_project_folder(input.parent, input.name, allowed_roots=roots)
+                if input.parent else input.path)
+        row = project_service.create(ctx.uid, input.name, path, input.skills,
+                                     input.description, allowed_roots=roots)
     except ProjectError as exc:
         raise _translate(exc) from exc
     return response_code.resp_200(row)
@@ -70,7 +79,8 @@ async def create_project(input: CreateProjectSchema,
 async def browse_projects(path: str = "", ctx: UserCtx = Depends(resolve_user_ctx)) -> Any:
     _require_projects(ctx)
     try:
-        return response_code.resp_200(project_service.browse(ctx.uid, path))
+        return response_code.resp_200(
+            project_service.browse(ctx.uid, path, allowed_roots=web_allowed_roots(ctx.uid)))
     except ProjectError as exc:
         raise _translate(exc) from exc
 

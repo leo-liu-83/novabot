@@ -90,6 +90,26 @@ Omit `models` with `dynamic_models` to discover; a non-empty `models` is a stati
 
 See [Model configuration](model-config.md).
 
+### Subagent models
+
+```json
+"agent": {
+    "model": "dashscope/qwen3.5-plus",
+    "subagents": {
+        "explore": {"model": ""},
+        "general": {"model": "dashscope/qwen-flash"}
+    }
+}
+```
+
+- An empty string (or a missing role) follows the current session model; when only one role is
+  given, the other keeps its built-in default
+- Model ids use the same `provider/model` form as `agent.model`; the model code itself may contain `/`
+- No need to edit the file by hand: the "Subagent models" panel in the web system page saves it to
+  `novabot.json` immediately
+- A broken subagent configuration never blocks the session: it falls back to the session model and
+  shows a one-time notice
+
 ## 5. Execution
 
 ```json
@@ -203,6 +223,58 @@ NOVABOT_LANG=en novabot
 Priority: explicit `/lang` > `NOVABOT_LANG` > `ui.json` > Chinese.
 
 Web language is switched in the top bar; theme is stored in browser `localStorage`.
+
+## 10.5 Optional key encryption
+
+Provider `key` / `api_key` values and `web.search.providers[].key` may be stored encrypted:
+
+```json
+"models": {
+  "deepseek": {
+    "key": "enc:v1:sm4:3Jk... (written by the tool; do not edit by hand)"
+  }
+}
+```
+
+- The installer asks once for a master key (SM2 private key, 64 hex chars / SM4 key, 32 hex
+  chars; empty generates one and prints it). **Keep that generated key**: losing it means
+  re-entering every provider key
+- To enable encryption on an existing install (idempotent; only plaintext is touched and an
+  existing master key is never overwritten):
+
+```bash
+python -m util.secret_cli init --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+```
+
+- Rotate with `init --rotate` (decrypts everything with the old key, then rewrites with the
+  new one; aborts without writing if any value cannot be decrypted)
+- Plaintext values keep working; the system page shows the encryption state, fingerprint and
+  how many plaintext keys remain
+- The master key lives in the `app_secrets` table of `~/.novabot/data/novabot.db`; see
+  [Security](security.md#71-optional-key-encryption) for the threat model
+
+## 10.6 Web project directory allowlist
+
+The web console may be reachable from the LAN, so registering a project there is limited to
+directories under the user **workspace** by default (the TUI is a local tool and is not
+restricted). To register existing repositories elsewhere, opt in explicitly:
+
+```json
+"projects": {
+    "web_roots": ["~/work", "/srv/repos"]
+}
+```
+
+- The web picker selects a **parent directory**: the project directory becomes
+  `<parent>/<project name>` and is created when missing (so the web console can start an empty
+  project directory; the TUI still registers the current directory)
+- `~` is expanded; the workspace is always allowed and need not be repeated
+- It only restricts browsing and creating projects from the web console; already-registered
+  projects keep working
+- The directory picker and the create endpoint share the same allowlist, so the boundary
+  cannot be bypassed; escaping it returns `project.path_allowed_roots`
+- Omitting the section is the same as `"web_roots": []` (workspace only)
 
 ## 11. Applying changes
 

@@ -37,7 +37,8 @@ class RenameSessionSchema(BaseModel):
 
 class CreateSessionSchema(BaseModel):
     model: Optional[str] = None
-    thinking: Optional[bool] = None
+    thinking_level: Optional[str] = None
+    thinking: Optional[bool] = None  # 旧字段：等价 thinking_level=medium/off
     # 空 = 无项目会话，行为与引入项目前一致
     project_id: Optional[str] = None
 
@@ -84,8 +85,9 @@ async def create_session(input: CreateSessionSchema, ctx: UserCtx = Depends(reso
         except ProjectError as exc:
             raise api_error(exc.code, **exc.vars) from exc
     try:
-        session_id = session_service.create(model=input.model, thinking=input.thinking,
-                                            user_id=ctx.uid, project_id=input.project_id)
+        session_id = session_service.create(
+            model=input.model, thinking=input.thinking, thinking_level=input.thinking_level,
+            user_id=ctx.uid, project_id=input.project_id)
     except ValueError as exc:
         raise api_error("session.create_blocked", status_code=status.HTTP_409_CONFLICT, message=str(exc)) from exc
     return response_code.resp_200(_with_exec_level(session_service.get_session(session_id, ctx.uid), ctx))

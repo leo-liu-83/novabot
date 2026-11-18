@@ -83,7 +83,8 @@ class ProjectService(SqliteService):
 
     def create(self, user_id: str, name: str, raw_path: str,
                skills: Sequence[dict] | None = None,
-               description: str = "") -> dict:
+               description: str = "",
+               allowed_roots: Optional[Sequence[str]] = None) -> dict:
         """登记一个已有目录；不创建 AGENTS.md，只补 .novabot/notes/ 目录。"""
         name = _validate_name(name)
         description = _validate_description(description)
@@ -94,7 +95,8 @@ class ProjectService(SqliteService):
             raise ProjectError("project.name_taken")
 
         path = validate_project_path(
-            raw_path, uid=user_id, existing_paths=self.active_paths(user_id)
+            raw_path, uid=user_id, existing_paths=self.active_paths(user_id),
+            allowed_roots=allowed_roots,
         )
         os.makedirs(os.path.join(path, ".novabot", "notes"), exist_ok=True)
 
@@ -134,9 +136,10 @@ class ProjectService(SqliteService):
         rows = self._query(sql + " GROUP BY p.id", (user_id, project_id))
         return _row(rows[0]) if rows else None
 
-    def browse(self, user_id: str, raw_path: str = "") -> dict:
+    def browse(self, user_id: str, raw_path: str = "",
+               allowed_roots: Optional[Sequence[str]] = None) -> dict:
         """选择项目目录用的目录列表；只列目录名，不读文件内容。"""
-        return browse_dirs(raw_path, uid=user_id)
+        return browse_dirs(raw_path, uid=user_id, allowed_roots=allowed_roots)
 
     def active_paths(self, user_id: str) -> list[str]:
         rows = self._query(
@@ -148,7 +151,8 @@ class ProjectService(SqliteService):
     def update_project(self, user_id: str, project_id: str, *,
                        name: Optional[str] = None,
                        description: Optional[str] = None,
-                       skills: Optional[Sequence[dict]] = None) -> dict:
+                       skills: Optional[Sequence[dict]] = None,
+                       path: Optional[str] = None) -> dict:
         row = self.get_project(user_id, project_id, include_archived=True)
         if row is None:
             raise ProjectError("project.not_found")
@@ -170,6 +174,15 @@ class ProjectService(SqliteService):
         if skills is not None:
             sets.append("skills = ?")
             params.append(json.dumps(list(skills), ensure_ascii=False))
+        if path is not None:
+            # 换目录与新建用同一套校验；旧路径必须从"已占用"里剔掉，
+            # 否则新目录会和自己的旧目录被判成嵌套（is_within 双向判断）
+            others = [p for p in self.active_paths(user_id) if p != row["path"]]
+            new_path = validate_project_path(path, uid=user_id, existing_paths=others)
+            # 与 create 保持一致：项目目录下留 notes 目录，笔记写在那里
+            os.makedirs(os.path.join(new_path, ".novabot", "notes"), exist_ok=True)
+            sets.append("path = ?")
+            params.append(new_path)
         params.extend([project_id, user_id])
         try:
             self._execute(
@@ -204,6 +217,28 @@ class ProjectService(SqliteService):
         # realpath 与存库值不一致 = 目录被换成了符号链接（或 relocated），不能再当作同一个项目
         if project_dir_state(path) != "ok" or os.path.normcase(os.path.realpath(path)) != path:
             raise ProjectError("project.path_unavailable", path=path)
+        return row
+
+    def delete_project(self, user_id: str, project_id: str) -> dict:
+        """硬删除项目登记，返回被删的行。
+
+        会话只解绑不删除：删项目是整理目录归属，不该连带丢掉聊天记录。
+        与归档的区别也在这里——归档保留行与历史关联，删除不可恢复。
+        """
+        row = self.get_project(user_id, project_id, include_archived=True)
+        if row is None:
+            raise ProjectError("project.not_found")
+
+        with self._lock:
+            conn = self._connection()
+            conn.execute(
+                "UPDATE sessions SET project_id = NULL WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id),
+            )
+            conn.execute(
+                "DELETE FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id)
+            )
+            conn.commit()
         return row
 
     def delete_projects_by_user(self, user_id: str) -> None:

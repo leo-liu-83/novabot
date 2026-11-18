@@ -150,14 +150,16 @@
     browseProjects: (path) => request('/projects/browse?path=' + encodeURIComponent(path || '')),
     models: () => request('/models'),
     setDefaultModel: (model) => json('POST', '/models/default', { model }),
+    setSubagentModel: (role, model) => json(
+      'PUT', '/models/subagents/' + encodeURIComponent(role), { model }),
     session: (id) => request('/sessions/' + encodeURIComponent(id)),
     messages: (id, limit, beforeId) => {
       const q = new URLSearchParams({ limit: String(limit || 30) });
       if (beforeId) q.set('before_id', String(beforeId));
       return request('/sessions/' + encodeURIComponent(id) + '/messages?' + q.toString());
     },
-    createSession: (model, thinking, projectId) => json('POST', '/sessions', {
-      model, thinking, project_id: projectId || undefined,
+    createSession: (model, thinkingLevel, projectId) => json('POST', '/sessions', {
+      model, thinking_level: thinkingLevel, project_id: projectId || undefined,
     }),
     transferSessionProject: (id, projectId) => json(
       'PATCH', '/sessions/' + encodeURIComponent(id) + '/project', { project_id: projectId }),

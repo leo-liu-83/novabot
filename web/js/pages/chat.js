@@ -400,7 +400,7 @@
   function makeDraft() {
     return {
       id: null, title: I.t('chat.new'), model: NB.app.defaultModel || null,
-      thinking: NB.mock.ui.defaultThinking, level: NB.mock.ui.defaultLevel,
+      thinkingLevel: NB.mock.ui.defaultThinkingLevel, level: NB.mock.ui.defaultLevel,
       projectId: null, projectName: null, projectPath: null,
       updatedAt: new Date().toISOString(), tokensIn: 0, tokensOut: 0,
       contextTokens: 0, contextLimit: 0, messages: [], uploads: [],
@@ -567,7 +567,7 @@
       ? U.esc(session.id) + ' · ' + U.fmtTime(session.updatedAt)
       : U.esc(I.t('chat.draftHint'));
     const model = NB.mock.model(session.model);
-    const thinking = session.thinking == null ? 'auto' : session.thinking ? 'on' : 'off';
+    const thinking = session.thinkingLevel || 'auto';
     // 与 TUI 一致：进度事件给实时估算，usage 到达后用实测值覆盖；0 值不渲染空 chip
     const speed = speedText(session.speed);
     const actions = session.id
@@ -584,7 +584,7 @@
           U.icon('pulse') + '<b>' + speed + '</b></span>' : '') +
         '<button type="button" class="chip" data-chat-model title="' + U.esc(I.t('选择模型')) + '">' +
           U.icon('cpu') + '<b>' + U.esc(model.name) + '</b><span class="caret">▾</span></button>' +
-        '<button type="button" class="chip" data-chat-thinking title="' + U.esc(I.t('切换思考')) + '">' +
+        '<button type="button" class="chip" data-chat-thinking title="' + U.esc(I.t('思考档位')) + '">' +
           U.icon('brain') + 'think <b>' + thinking + '</b></button>' +
         '<button type="button" class="chip" data-chat-level title="' + U.esc(
           session.projectName && session.level === 'T4'
@@ -675,9 +675,17 @@
     };
   }
 
-  function scrollBottom() {
+  /* 滚到底部。默认瞬间到位：切会话、重新渲染、流式跟随都不该“从上往下滚一遍”。
+     平滑只留给用户主动点的「跳到最新」。 */
+  function scrollBottom(smooth) {
     const el = document.getElementById('chat-scroll');
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el) {
+      if (smooth && typeof el.scrollTo === 'function') {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      } else {
+        el.scrollTop = el.scrollHeight;
+      }
+    }
     syncJumpLatest();
   }
 
@@ -706,13 +714,15 @@
   }
 
   /* 点击导航条目：把对应提问滚到可视区顶部附近。
-     剩下的滚动位置交给 CSS 的 scroll-behavior: smooth。 */
+     这是用户主动跳转，给平滑过渡；容器本身不再设 scroll-behavior，
+     否则连切会话这种程序化定位也会动画。 */
   function scrollToTurn(mi) {
     const sc = document.getElementById('chat-scroll');
     const target = document.querySelector('#chat-inner [data-mi="' + mi + '"]');
     if (!sc || !target) return;
-    const top = target.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop - 12;
-    sc.scrollTop = Math.max(0, top);
+    const top = Math.max(0, target.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop - 12);
+    if (typeof sc.scrollTo === 'function') sc.scrollTo({ top, behavior: 'smooth' });
+    else sc.scrollTop = top;
     syncNavActive(mi);
   }
 
@@ -1196,7 +1206,7 @@
     const draftLevel = createdNow ? s.level : null;
     // 草稿页选的模型/思考必须带进新建会话；否则后端只能回落到 agent.model
     const draftModel = createdNow ? s.model : null;
-    const draftThinking = createdNow ? s.thinking : null;
+    const draftThinking = createdNow ? s.thinkingLevel : null;
     const draftProject = createdNow ? s.projectId : null;
     if (createdNow) {
       try {
@@ -1244,7 +1254,8 @@
     else renderThread(s);
     await consumeEvents(s, assistant, '/chat/completions', {
       query, session_id: s.id, model: s.model || undefined,
-      enable_thinking: s.thinking, show_thinking: s.thinking !== false, streamable: true,
+      thinking_level: s.thinkingLevel || undefined,
+      show_thinking: s.thinkingLevel !== 'off', streamable: true,
       attachments: uploads.map((a) => ({ id: a.id, name: a.name })),
     }, controller, { query: v, attachments: uploads });
   }
@@ -1394,8 +1405,8 @@
       decision,
       interrupt_id: msg.interrupt.interrupt_id,
       model: s.model || undefined,
-      enable_thinking: s.thinking,
-      show_thinking: s.thinking !== false,
+      thinking_level: s.thinkingLevel || undefined,
+      show_thinking: s.thinkingLevel !== 'off',
     }, controller);
   }
 
@@ -1544,6 +1555,23 @@
 
   function modelMenuItems(session) {
     const items = [];
+    if (!NB.mock.models.length) {
+      // 空目录必须说清原因：是配置没加载、还是 provider 连不上/没发现模型
+      items.push({ label: I.t('没有可用模型'), disabled: true });
+      (NB.mock.modelProviders || []).forEach((p) => {
+        items.push({
+          label: p.name,
+          hint: (NB.mock.discoveryErrors || {})[p.code]
+            ? I.t('模型发现失败：') + (NB.mock.discoveryErrors || {})[p.code]
+            : I.t('没有配置模型'),
+          disabled: true,
+        });
+      });
+      if (!(NB.mock.modelProviders || []).length) {
+        items.push({ label: I.t('请检查 novabot.json 的 models 段'), disabled: true });
+      }
+      return items;
+    }
     modelGroups().forEach((group) => {
       items.push({ group: group.name });
       group.models.forEach((m) => {
@@ -1582,10 +1610,25 @@
     U.menu(anchor, modelMenuItems(session), modelMenuOpts());
   }
 
-  function toggleThinking(session) {
-    session.thinking = !session.thinking;
-    NB.mock.ui.defaultThinking = session.thinking;
-    syncHead(session);
+  /* 思考档位菜单：只列当前模型能表达的档位，auto = 不覆盖模型默认。
+     老式布尔开关在这里已经不够用——多数新模型只有 low/medium/high。 */
+  function thinkingLevelsFor(session) {
+    const model = NB.mock.model(session.model);
+    const levels = (model && model.thinkingLevels) || ['off', 'medium'];
+    return levels.concat(['auto']);
+  }
+
+  function openThinkingMenu(anchor, session) {
+    const currentLevel = session.thinkingLevel || 'auto';
+    U.menu(anchor, thinkingLevelsFor(session).map((level) => ({
+      label: level,
+      active: level === currentLevel,
+      onPick: () => {
+        session.thinkingLevel = level === 'auto' ? null : level;
+        NB.mock.ui.defaultThinkingLevel = session.thinkingLevel;
+        syncHead(session);
+      },
+    })), { head: I.t('思考档位'), align: 'right', className: 'model-menu' });
   }
 
   async function applySessionLevel(level) {
@@ -1707,7 +1750,7 @@
       b.onclick = () => { if (!sessionBusy()) { const s = current(); if (s) openModelMenu(b, s); } };
     });
     slot.querySelectorAll('[data-chat-thinking]').forEach((b) => {
-      b.onclick = () => { if (!sessionBusy()) { const s = current(); if (s) toggleThinking(s); } };
+      b.onclick = () => { if (!sessionBusy()) { const s = current(); if (s) openThinkingMenu(b, s); } };
     });
     slot.querySelectorAll('[data-chat-level]').forEach((b) => {
       b.onclick = () => { if (!sessionBusy()) { const s = current(); if (s) openLevelMenu(b, s); } };
@@ -1783,6 +1826,7 @@
     headHTMLForTest: headHTML,
     pickActiveForTest: pickActiveTurn,
     jumpLatestNeededForTest: jumpLatestNeeded,
+    scrollBottomForTest: scrollBottom,
     syncJumpLatestForTest: syncJumpLatest,
     resetContextForTest: resetContext,
     resolveInterruptForTest: resolveInterrupt,
@@ -1846,7 +1890,7 @@
         const jump = e.target.closest && e.target.closest('[data-jump]');
         if (jump) { scrollToTurn(Number(jump.dataset.jump)); return; }
         const latest = e.target.closest && e.target.closest('[data-jump-latest]');
-        if (latest) { scrollBottom(); return; }
+        if (latest) { scrollBottom(true); return; }
         // 加载更早的消息必须走委托：翻页后 renderThread 会重建按钮，
         // 直接绑定在旧元素上的 onclick 会随 innerHTML 一起丢失
         const earlier = e.target.closest && e.target.closest('[data-load-earlier]');

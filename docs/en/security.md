@@ -101,9 +101,35 @@ Search results and fetched pages are wrapped as untrusted content; forged bounda
 
 ## 7. Data and keys
 
-- Model keys, search provider keys and MCP headers are stored in plaintext locally
-- TUI login tokens are stored in `data/login.json` when `remember_login=true`
-- File permissions are the main boundary
+### 7.1 Optional key encryption
+
+Provider keys and self-hosted search keys can be stored encrypted (`enc:v1:sm4:...`):
+
+- The master key is chosen at install time (paste an SM2 private key / SM4 key, or leave it
+  empty to generate one and print it), then read from the database on every start;
+- Values are encrypted with SM4-CBC and an SM3 integrity tag; restoring on another machine
+  only needs the config file plus the master key;
+- Plaintext values keep working (hand-edited configs are fine), and `status` reports how many
+  are still plaintext;
+- When a ciphertext cannot be decrypted, it is **never** sent to the provider — you get a
+  "master key missing or mismatched" error instead.
+
+```bash
+python -m util.secret_cli init --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
+```
+
+**Boundaries**: it protects against copying/screenshotting/sharing the config or database
+alone; it does **not** protect against a local process that can read
+`~/.novabot/data/novabot.db` (the master key lives in the same file), against someone who can
+edit the config (`base_url` can be repointed), or against backing up the whole `~/.novabot`
+directory (the master key travels with it). Headers, MCP headers and login tokens are not
+encrypted. Encryption does not replace file permissions: the config and database are chmod
+`0600` on POSIX.
+
+### 7.2 Other data
+
+- MCP headers stay plaintext; login tokens live in `data/login.json` when `remember_login=true`
 - Do not commit or share `~/.novabot/`
 - Account deletion cleans sessions, attachments and related data; keep backups
 

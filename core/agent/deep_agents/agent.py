@@ -18,9 +18,10 @@ from deepagents.middleware.summarization import create_summarization_middleware
 
 from enums import AgentBackendTypeEnum
 from config import config
-from const.prompts import build_system_prompt
+from const.prompts import build_system_prompt, render_project_block
 from core.agent import persistence
 from core.llm.token_counter import count_tokens_cjk
+from core.llm.thinking import normalize_level
 from core.manager.llm_manager import llm_manager
 from logger import logger
 from service.attachment.attachments import PendingImages
@@ -43,6 +44,8 @@ from .project_backend import (
 )
 from .skill_backend import AttachmentGuardBackend, SkillGateBackend, SkillGateShellBackend
 from .step_limit import StepLimitMiddleware
+from .subagent_gate import SubagentGateMiddleware
+from .subagents import build_subagent_specs
 from .skill_script import build_run_skill_script_tool
 from .web_fetch import build_web_fetch_tool
 from .web_middleware import WebFetchPolicyMiddleware
@@ -79,10 +82,14 @@ class Agent:
     # 进程级共享checkpointer，保证同thread_id的会话及interrupt-resume可持续
     _shared_checkpointer = MemorySaver()
 
-    def __init__(self, model: Optional[str]=None, enable_thinking: Optional[bool]=None, streamable: bool=False, backend_type: AgentBackendTypeEnum=AgentBackendTypeEnum.FILESYSTEM):
+    def __init__(self, model: Optional[str]=None, thinking_level: Optional[str]=None,
+                 streamable: bool=False,
+                 backend_type: AgentBackendTypeEnum=AgentBackendTypeEnum.FILESYSTEM,
+                 enable_thinking: Optional[bool]=None):
         # 未指定模型时取配置中的默认Agent模型
         self.model = model or (config.CONFIG_DATA.agent.model if config.CONFIG_DATA and config.CONFIG_DATA.agent else "")
-        self.enable_thinking = enable_thinking
+        # 档位优先；老调用方传的布尔按 true=medium / false=off 折算
+        self.thinking_level = normalize_level(thinking_level) or normalize_level(enable_thinking)
         self.streamable = streamable
         self.backend_type = backend_type
         # 构建后可读：服务层用它推导上下文预算，避免再解析一遍模型配置
@@ -95,14 +102,15 @@ class Agent:
                   ctx: Optional[UserCtx]=None, session_id: Optional[str]=None,
                   notices: Optional[NoticeSink] = None, thread_id: Optional[str]=None,
                   pending_images: Optional[PendingImages]=None,
-                  project: "Optional[ProjectContext]"=None):
+                  project: "Optional[ProjectContext]"=None,
+                  usage_sink=None):
         # API侧thread_id带uid前缀、TUI就是session_id；产物目录按thread_id派生，必须与checkpoint同名
         thread_id = thread_id or session_id
         # API并发场景下身份不能取全局单例（多请求会互相覆盖），故ctx由调用方显式传入
         ctx = ctx or get_current_ctx()
         # 图片只活在本次请求：服务层持有同一个实例，422 时清空、read_attachment 追加
         pending = pending_images if pending_images is not None else PendingImages()
-        llm = llm_manager.get_llm(self.model, self.enable_thinking, session_id=session_id)
+        llm = llm_manager.get_llm(self.model, self.thinking_level, session_id=session_id)
         self.max_input_tokens = getattr(llm, "max_input_tokens", None)
         self.max_output_tokens = getattr(llm, "max_tokens", 0) or 0
         backend = self._get_backend(ctx, session_id, thread_id, project)
@@ -151,6 +159,37 @@ class Agent:
 
             project_section = build_project_section(project, ctx)
 
+        permissions = self._get_permissions(ctx, project=project, uid=ctx.uid,
+                                            session_id=session_id)
+        interrupt_on = self._interrupt_tools(exec_level, ctx, session_id, project)
+
+        # 探索子代理自己一份只读工具集：文档转换不允许绝对路径（那是 T4 才放开的能力，
+        # 只读角色不该因为主会话是 T4 就跟着获得）
+        explore_tools: list = []
+        if config.WEB_SEARCH_ENABLED:
+            explore_tools.append(build_web_search_tool(ctx, notices))
+        if config.WEB_FETCH_PERMISSION != "deny":
+            explore_tools.append(build_web_fetch_tool())
+        explore_tools.append(build_convert_document_tool(ctx, thread_id, allow_absolute=False))
+
+        subagents = build_subagent_specs(
+            session_model=self.model,
+            ctx=ctx,
+            backend=backend,
+            base_tools=tools,
+            explore_tools=explore_tools,
+            skills=skills,
+            exec_level=exec_level,
+            interrupt_on=interrupt_on,
+            permissions=permissions,
+            project=project,
+            session_id=session_id or "",
+            project_block=render_project_block(project_section) if project_section is not None else "",
+            notices=notices,
+            mcp_modes=mcp_modes,
+            usage_sink=usage_sink,
+        )
+
         return create_deep_agent(
             model=llm,
             tools=tools,
@@ -165,13 +204,15 @@ class Agent:
             ),
             skills=skills,
             backend=backend,
-            permissions=self._get_permissions(ctx, project=project, uid=ctx.uid,
-                                              session_id=session_id),
+            permissions=permissions,
+            subagents=subagents,
             middleware=[
                 # 项目路径归一必须在 HITL 与工具执行之前
                 *([ProjectPathMiddleware(project.path)] if project is not None else []),
                 # 轮数上限放最外层：它摘工具时要把内层中间件的工具也一并摘掉
                 StepLimitMiddleware(config.AGENT_MAX_STEPS),
+                # 子代理闸门：并发、单轮预算、超时（只认 task 工具，其余放行）
+                SubagentGateMiddleware(session_id or ""),
                 ExecToolPolicyMiddleware(exec_level, ctx,
                                          project_root=project.path if project is not None else None),
                 WebFetchPolicyMiddleware(config.WEB_FETCH_PERMISSION, config.WEB_FETCH_ALLOWLIST),
@@ -182,7 +223,7 @@ class Agent:
                 summarization,
             ],
             checkpointer=persistence.get_checkpointer() or self._shared_checkpointer,
-            interrupt_on=self._interrupt_tools(exec_level, ctx, session_id, project)
+            interrupt_on=interrupt_on
         )
 
     # T3逐条确认：execute进interrupt_on，由TUI/API的确认栏决定放行还是中止。

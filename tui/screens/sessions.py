@@ -23,7 +23,7 @@ SESSIONS: list["SessionEntry"] = []
 _loaded = False
 
 class SessionEntry(dict):
-    """ {id,title,model,thinking,context_tokens,context_limit,project_id,project_name,project_path} """
+    """ {id,title,model,thinking,thinking_level,context_tokens,context_limit,project_id,project_name,project_path} """
 
 def _uid() -> str:
     return get_current_ctx().uid
@@ -42,6 +42,7 @@ def _load() -> None:
 
     SESSIONS = [
         SessionEntry({"id": r["id"], "title": r["title"], "model": r["model"], "thinking": r["thinking"],
+                      "thinking_level": r.get("thinking_level"),
                       "updated_at": r.get("updated_at", 0), "tokens_in": r.get("tokens_in", 0), "tokens_out": r.get("tokens_out", 0),
                       "speed": r.get("speed", 0.0), "context_tokens": r.get("context_tokens", 0),
                       "context_limit": r.get("context_limit", 0),
@@ -70,14 +71,18 @@ def current_project() -> Optional[dict]:
         # 项目查询失败不该拦住建会话：退化成无项目会话
         return None
 
-def create_session(title: str = "新对话", model: Optional[str]=None, thinking: Optional[bool]=None) -> SessionEntry:
+def create_session(title: str = "新对话", model: Optional[str]=None,
+                   thinking_level: Optional[str]=None) -> SessionEntry:
     _load()
     project = current_project()
 
     # 键由服务层签发（它同时就是 agent 的 thread_id），TUI 不自己造 uuid
-    session_id = session_service.create(title=title[:TITLE_MAX], model=model, thinking=thinking,
+    session_id = session_service.create(title=title[:TITLE_MAX], model=model,
+                                        thinking_level=thinking_level,
                                         user_id=_uid(), project_id=project["id"] if project else None)
-    entry = SessionEntry({"id": session_id, "title": title[:TITLE_MAX], "model": model, "thinking": thinking,
+    entry = SessionEntry({"id": session_id, "title": title[:TITLE_MAX], "model": model,
+                          "thinking": None if thinking_level is None else thinking_level != "off",
+                          "thinking_level": thinking_level,
                           "updated_at": int(time.time()), "tokens_in": 0, "tokens_out": 0, "speed": 0.0,
                           "context_tokens": 0, "context_limit": 0,
                           "project_id": project["id"] if project else None,
@@ -110,8 +115,11 @@ def join_project(entry: SessionEntry, project: dict) -> bool:
     return status == "ok"
 
 
+_UNSET = object()
+
+
 def update_session(entry: SessionEntry, title: Optional[str]=None, model: Optional[str]=None,
-                   thinking: Optional[bool]=None) -> None:
+                   thinking_level=_UNSET) -> None:
     """只更新本进程缓存。
 
     会话行的写入归服务层记录器（`service.session.recorder`）：表现层再 save 一次就是第二个写入者，
@@ -121,8 +129,10 @@ def update_session(entry: SessionEntry, title: Optional[str]=None, model: Option
         entry["title"] = title[:TITLE_MAX]
     if model is not None:
         entry["model"] = model
-    if thinking is not None:
-        entry["thinking"] = thinking
+    if thinking_level is not _UNSET:
+        # None 是合法取值（auto）：不能用"没传"和"设为 auto"共用一个哨兵
+        entry["thinking_level"] = thinking_level
+        entry["thinking"] = None if thinking_level is None else thinking_level != "off"
     entry["updated_at"] = int(time.time())
 
 def delete_session(entry: SessionEntry) -> None:

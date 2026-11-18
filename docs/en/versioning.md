@@ -41,6 +41,9 @@ Bump `APP_VERSION`, run the tests, and they will point at anything that fell beh
 
 - On the development branch `master`, as one commit: `chore(release): 0.2.0`
 - Push it together with the rest of the work to `origin master`
+- **Bump by batch, not by commit**: feature commits only ship code and leave the version alone;
+  bump once when a batch is ready to be delivered, and let the maintainer pick the number.
+  Do not bump separately for every feature
 - Pre-release (`scripts/prerelease.sh`) syncs content to `origin main` and never touches the version
 - Publish (`scripts/publish.sh`) only reads the version; it never decides it
 

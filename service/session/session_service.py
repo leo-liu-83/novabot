@@ -22,6 +22,7 @@ from config import config
 from core.agent import persistence
 from service.db_base import SqliteService
 from service.session import approvals
+from core.llm.thinking import normalize_level
 from service.project.schema import ensure_projects_schema
 
 SCHEMA = """
@@ -62,6 +63,10 @@ CREATE TABLE IF NOT EXISTS usage_events (
     uid           TEXT NOT NULL,
     session_id    TEXT NOT NULL,
     model         TEXT NOT NULL DEFAULT '',
+    -- 产生这次调用的 agent：空=主 agent，explore/general=子代理
+    agent         TEXT NOT NULL DEFAULT '',
+    -- 留给异步子代理：后台任务 id；同步路径恒为空
+    task_id       TEXT NOT NULL DEFAULT '',
     input_tokens  INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
     elapsed_ms    INTEGER NOT NULL DEFAULT 0,
@@ -100,6 +105,8 @@ DEFAULT_USER_ID = "default"
 
 # 老库补列：(表, 列, 声明)。已存在的列直接跳过，可对同一库重复执行
 MIGRATIONS = [
+    ("usage_events", "agent", "TEXT NOT NULL DEFAULT ''"),
+    ("usage_events", "task_id", "TEXT NOT NULL DEFAULT ''"),
     ("sessions", "tokens_in", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "tokens_out", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "speed", "REAL NOT NULL DEFAULT 0"),
@@ -114,10 +121,18 @@ MIGRATIONS = [
     ("messages", "meta", "TEXT NOT NULL DEFAULT ''"),
     # 项目归属：空 = 无项目会话，行为与引入项目前完全一致
     ("sessions", "project_id", "TEXT"),
+    # 思考档位（off/low/medium/high）：空 = 跟随模型默认。
+    # 老的 thinking 列保留：老客户端/老行仍按布尔读，写入时两者同步
+    ("sessions", "thinking_level", "TEXT"),
 ]
 
 class SessionService(SqliteService):
-    """会话与消息的SQLite存储；thinking以 -1/0/1 编码NULL/False/True"""
+    """会话与消息的SQLite存储。
+
+    思考有两列：`thinking`（老布尔，-1/0/1 编码 NULL/False/True）与
+    `thinking_level`（档位 SQL 文本）。读取优先档位，写入时两列同步，
+    这样老版本客户端仍能看出"开/关"，新版本能拿到具体档位。
+    """
 
     LEASE_TTL_SECONDS = 120
     LEASE_POLL_SECONDS = 0.05
@@ -199,39 +214,47 @@ class SessionService(SqliteService):
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     # region 会话
-    def save(self, session_id: str, title: str="新对话", model: Optional[str]=None, thinking: Optional[bool]=None, user_id: str=DEFAULT_USER_ID) -> None:
+    def save(self, session_id: str, title: str="新对话", model: Optional[str]=None, thinking: Optional[bool]=None,
+             user_id: str=DEFAULT_USER_ID, thinking_level: Optional[str]=None) -> None:
         # UPSERT：重复save时保留created_at，thinking传None(auto)也能正常写入
         # 冲突分支刻意不更新user_id：会话归属只能经transfer_session变更，普通保存不得改写归属。
         # 永久 tombstone 阻止过期的旧写入在删除完成后重新 INSERT 复活会话键。
         now = int(time.time())
+        level, legacy = self._encode_thinking_pair(thinking_level, thinking)
         self._execute(
-            """INSERT INTO sessions (id, title, model, thinking, user_id, created_at, updated_at)
-               SELECT ?, ?, ?, ?, ?, ?, ?
+            """INSERT INTO sessions (id, title, model, thinking, thinking_level, user_id,
+                                    created_at, updated_at)
+               SELECT ?, ?, ?, ?, ?, ?, ?, ?
                WHERE NOT EXISTS (SELECT 1 FROM session_deletions WHERE session_id = ?)
                  AND NOT EXISTS (SELECT 1 FROM session_user_blocks WHERE user_id = ?)
                ON CONFLICT(id) DO UPDATE SET title = excluded.title, model = excluded.model,
-               thinking = excluded.thinking, updated_at = excluded.updated_at
+               thinking = excluded.thinking, thinking_level = excluded.thinking_level,
+               updated_at = excluded.updated_at
                WHERE sessions.user_id = excluded.user_id
                  AND NOT EXISTS (SELECT 1 FROM session_deletions d WHERE d.session_id = excluded.id)""",
-            (session_id, title, model, self._encode_thinking(thinking), user_id, now, now, session_id, user_id)
+            (session_id, title, model, legacy, level, user_id, now, now, session_id, user_id)
         )
 
     def update_existing(self, session_id: str, title: str, model: Optional[str],
-                        thinking: Optional[bool], user_id: str=DEFAULT_USER_ID) -> bool:
+                        thinking: Optional[bool], user_id: str=DEFAULT_USER_ID,
+                        thinking_level: Optional[str]=None) -> bool:
         """只更新已有且仍归属当前用户的会话；不能用 UPSERT 让并发删除后的记录复活。"""
+        level, legacy = self._encode_thinking_pair(thinking_level, thinking)
         with self._lock:
             conn = self._connection()
             cursor = conn.execute(
-                "UPDATE sessions SET title = ?, model = ?, thinking = ?, updated_at = ? "
+                "UPDATE sessions SET title = ?, model = ?, thinking = ?, thinking_level = ?,"
+                " updated_at = ? "
                 "WHERE id = ? AND user_id = ? "
                 "AND NOT EXISTS (SELECT 1 FROM session_deletions d WHERE d.session_id = sessions.id)",
-                (title, model, self._encode_thinking(thinking), int(time.time()), session_id, user_id)
+                (title, model, legacy, level, int(time.time()), session_id, user_id)
             )
             conn.commit()
             return cursor.rowcount == 1
 
     def create(self, title: str="新对话", model: Optional[str]=None, thinking: Optional[bool]=None,
-               user_id: str=DEFAULT_USER_ID, project_id: Optional[str]=None) -> str:
+               user_id: str=DEFAULT_USER_ID, project_id: Optional[str]=None,
+               thinking_level: Optional[str]=None) -> str:
         """签发会话键并落一行，返回这个键。
 
         键只在这里生成：`sessions.id` 同时就是 agent 的 `thread_id`，两端共用一把键。
@@ -249,11 +272,11 @@ class SessionService(SqliteService):
 
             session_id = str(uuid.uuid4())
             now = int(time.time())
+            level, legacy = self._encode_thinking_pair(thinking_level, thinking)
             conn.execute(
-                "INSERT INTO sessions (id, title, model, thinking, user_id, project_id,"
-                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (session_id, title, model, self._encode_thinking(thinking), user_id,
-                 project_id, now, now)
+                "INSERT INTO sessions (id, title, model, thinking, thinking_level, user_id,"
+                " project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, title, model, legacy, level, user_id, project_id, now, now)
             )
             conn.commit()
 
@@ -512,7 +535,8 @@ class SessionService(SqliteService):
 
     def record_usage_event(self, *, turn_id: str, uid: str, session_id: str,
                            model: str, input_tokens: int, output_tokens: int,
-                           elapsed: float, created_at: int) -> None:
+                           elapsed: float, created_at: int, agent: str = "",
+                           task_id: str = "") -> None:
         """一次模型调用落一行明细。
 
         与 `save_tokens()` 同频：调用结束就写，进程被杀时不丢已经跑完的调用。
@@ -527,11 +551,11 @@ class SessionService(SqliteService):
             )
             conn.execute(
                 "INSERT INTO usage_events "
-                "(turn_id, uid, session_id, model, input_tokens, output_tokens, "
-                " elapsed_ms, source, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'live', ?)",
+                "(turn_id, uid, session_id, model, agent, task_id, input_tokens, "
+                " output_tokens, elapsed_ms, source, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', ?)",
                 (
-                    turn_id, uid, session_id, model or "",
+                    turn_id, uid, session_id, model or "", agent or "", task_id or "",
                     int(input_tokens or 0), int(output_tokens or 0),
                     int(round(float(elapsed or 0.0) * 1000)), created_at,
                 ),
@@ -605,7 +629,7 @@ class SessionService(SqliteService):
         """按 (键, 归属) 读一行；不存在或不属于该身份时返回 None。"""
         # projects 表由 _on_new_connection 建好（TUI 只跑会话层），这里不依赖项目服务
         rows = self._query(
-            "SELECT s.id, s.title, s.model, s.thinking, s.updated_at, s.tokens_in,"
+            "SELECT s.id, s.title, s.model, s.thinking, s.thinking_level, s.updated_at, s.tokens_in,"
             " s.tokens_out, s.speed, s.context_tokens, s.context_limit, s.project_id,"
             " p.name AS project_name, p.path AS project_path FROM sessions s"
             " LEFT JOIN projects p ON p.id = s.project_id"
@@ -619,6 +643,7 @@ class SessionService(SqliteService):
         return {
             **row,
             "thinking": self._decode_thinking(row["thinking"]),
+            "thinking_level": self._decode_thinking_level(row),
             "project_id": row["project_id"],
             "project_name": row["project_name"],
             "project_path": row["project_path"],
@@ -661,6 +686,7 @@ class SessionService(SqliteService):
                 "title": r["title"],
                 "model": r["model"],
                 "thinking": self._decode_thinking(r["thinking"]),
+                "thinking_level": self._decode_thinking_level(r),
                 "updated_at": r["updated_at"],
                 "tokens_in": r["tokens_in"] or 0,
                 "tokens_out": r["tokens_out"] or 0,
@@ -1183,5 +1209,28 @@ class SessionService(SqliteService):
         if value is None:
             return None
         return bool(value)
+
+    @classmethod
+    def _encode_thinking_pair(cls, level: Optional[str], legacy: Optional[bool]):
+        """归一档位并同步老布尔列；两者都没给时两列都写 NULL（跟随模型默认）。"""
+        try:
+            resolved = normalize_level(level)
+        except ValueError:
+            resolved = None
+        if resolved is None and legacy is not None:
+            resolved = "medium" if legacy else "off"
+        legacy_value = None if resolved is None else (0 if resolved == "off" else 1)
+        return resolved, legacy_value
+
+    @staticmethod
+    def _decode_thinking_level(row: dict) -> Optional[str]:
+        """档位优先；老行没有档位时按布尔推（true 视为 medium）。"""
+        level = row.get("thinking_level")
+        if level:
+            return level
+        legacy = row.get("thinking")
+        if legacy is None:
+            return None
+        return "medium" if legacy else "off"
 
 session_service = SessionService()

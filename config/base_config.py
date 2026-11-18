@@ -18,32 +18,9 @@ from service.config.dtos import *
 from core.agent.deep_agents.exec_policy import ExecLevel, parse_level
 from service.web.web_policy import parse_permission
 
-# 库名曾叫 sessions.db，但库里早已不止会话：users / auth_tokens / skill_reviews /
-# web_quotas / web_usage / user_web_providers 都在同一文件里。改名与 novabot.json 对齐。
-DB_FILE_NAME = "novabot.db"
-LEGACY_DB_FILE_NAME = "sessions.db"
-
-
-def resolve_db_file_path(data_dir: str) -> str:
-    """定位应用数据库，并把存量 sessions.db 原子改名为 novabot.db。
-
-    改名而非只改常量：直接换名会让老用户的库变成孤儿文件，表现为"数据全没了"。
-    改名失败时回落到旧路径，宁可名字不好看也不能让数据孤儿化。
-    """
-    target = f"{data_dir}/{DB_FILE_NAME}"
-    legacy = f"{data_dir}/{LEGACY_DB_FILE_NAME}"
-
-    if os.path.exists(target) or not os.path.exists(legacy):
-        return target
-
-    try:
-        os.replace(legacy, target)
-    except OSError as err:
-        # 配置加载早于日志系统就绪，只能打stderr
-        print(f"[CONFIG] 数据库改名失败，继续使用旧文件 {legacy}: {err}", file=sys.stderr)
-        return legacy
-
-    return target
+# 库文件定位与老库改名都在 util.paths：secret_cli 要在不加载整套配置的前提下找到同一个库。
+# 这里保留同名导出，调用方与测试不必改。
+from util.paths import DB_FILE_NAME, LEGACY_DB_FILE_NAME, resolve_db_file_path
 
 
 class BaseConfig(BaseSettings):
@@ -51,7 +28,7 @@ class BaseConfig(BaseSettings):
     APP_ENV: str = "dev"  # 环境变量
     APP_NAME: str = "NovaBot"  # 应用名称
     APP_DESC: str = "Nova智能体"  # 应用描述
-    APP_VERSION: str = "0.2.2"  # 应用版本
+    APP_VERSION: str = "0.3.0"  # 应用版本
     APP_LOG_PATH: str = ""  # 应用日志目录
     APP_LOG_NAME: str = "nova_bot"  # 应用日志文件名
     APP_LOG_ROTATION: str = "5"  # 应用日志文件切换大小
@@ -78,7 +55,10 @@ class BaseConfig(BaseSettings):
     USER_PROMPT_FILE: str = "prompt.md"  # 用户自定义提示词（可选，嵌入核心提示词槽位）
 
     # 配置数据
-    CONFIG_DATA: Optional[ConfigDto] = ConfigService(user_config_path=f"{APP_DATA_PATH}/{USER_CONFIG_FILE}").load()
+    CONFIG_DATA: Optional[ConfigDto] = ConfigService(
+        user_config_path=f"{APP_DATA_PATH}/{USER_CONFIG_FILE}",
+        secret_db_path=resolve_db_file_path(f"{APP_DATA_PATH}/data"),
+    ).load()
 
     # 多用户相关配置：用户配置未显式给出时取默认值（单用户、记住登录）
     MULTI_USER: bool = bool(CONFIG_DATA.multi_user) if CONFIG_DATA else False

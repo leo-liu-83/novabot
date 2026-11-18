@@ -12,12 +12,51 @@ from typing import Callable, Optional
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
+from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, OptionList
 from textual.widgets.option_list import Option
 from tui.i18n import t
 
 DEFAULT_HINT = "↑↓ 选择    Enter 确认    Esc 取消"
+
+
+class _ContextOptionList(OptionList):
+    """把分组标题一起纳入可视区的 OptionList。
+
+    组件自带的 `scroll_to_highlight` 只保证**当前项**可见：光标停在组首模型上时，
+    标题就在它上面一行，最小滚动会把标题顶出上边缘，用户看不到自己在哪个 provider 下。
+    这里把光标上方紧邻的 disabled 行（组标题 / 组间空行 / 不可用项，最多两行）也算进
+    滚动区域，代价是一次多带两行，换来分组始终有上下文。
+    """
+
+    def scroll_to_highlight(self, top: bool = False) -> None:
+        highlighted = self.highlighted
+        if highlighted is None or not self.is_mounted:
+            return
+
+        lines = self._index_to_line
+        if highlighted not in lines:
+            # 行号缓存还没建好（刚 add_options）：交回默认实现兜底
+            super().scroll_to_highlight(top)
+            return
+
+        head = highlighted
+        for _ in range(2):
+            prev = head - 1
+            if prev < 0 or prev not in lines or not self._options[prev].disabled:
+                break
+            head = prev
+
+        if head == highlighted:
+            super().scroll_to_highlight(top)
+            return
+
+        bottom = lines[highlighted] + self._heights[highlighted]
+        self.scroll_to_region(
+            Region(0, lines[head], self.scrollable_content_region.width, bottom - lines[head]),
+            force=True, animate=False, top=top, immediate=True,
+        )
 
 
 class SelectScreen(ModalScreen[Optional[str]]):
@@ -143,7 +182,7 @@ class SelectScreen(ModalScreen[Optional[str]]):
                 yield Label(self._title, id="select-title")
                 if self._filterable:
                     yield Input(placeholder=t(t("搜索")), id="select-search")
-                yield OptionList(id="select-options")
+                yield _ContextOptionList(id="select-options")
                 yield Label(f"[dim]{self._hint}[/dim]", id="select-hint")
                 yield Label(id="boost-probe")
 
@@ -189,13 +228,21 @@ class SelectScreen(ModalScreen[Optional[str]]):
 
         # 先按“分组标题 → 内容项”切块：标题（disabled 且无 id 的 Option）只属于
         # 它后面那一组。搜索后某组没有命中项时，标题和它前面的空行一起丢掉。
+        # 组间空行（只有空白的标题行）必须挂到下一块标题前：自成一块会因为“没有条目”
+        # 被下面的过滤整块丢掉，空行就永远画不出来。
         blocks: list[tuple[list, list]] = []
+        pending_blanks: list = []
         for item in items:
             if isinstance(item, Option) and item.id is None:
+                if not item.prompt.plain.strip():
+                    pending_blanks.append(item)
+                    continue
                 if blocks and blocks[-1][1] and not blocks[-1][0]:
-                    blocks[-1][0].append(item)
+                    blocks[-1][0] = pending_blanks + blocks[-1][0] + [item]
+                    pending_blanks = []
                 else:
-                    blocks.append(([item], []))
+                    blocks.append((pending_blanks + [item], []))
+                    pending_blanks = []
                 continue
             if not blocks:
                 blocks.append(([], []))
@@ -217,7 +264,11 @@ class SelectScreen(ModalScreen[Optional[str]]):
 
             if not matched:
                 continue
-            opts.extend(headers)
+            for header in headers:
+                # 搜索后首组被过滤掉时，原本属于它的组间空行会变成列表顶端的一行空白
+                if not opts and not header.prompt.plain.strip():
+                    continue
+                opts.append(header)
             for item in matched:
                 if isinstance(item, Option):
                     opts.append(item)

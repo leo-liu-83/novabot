@@ -113,6 +113,24 @@ python -m pip install --upgrade pip
 - 模型不支持 `enable_thinking`，或需要不同的 `thinking_style`
 - 聚合平台把未知参数转发给了上游
 
+### 提示「密钥无法解密：主密钥缺失或与配置不匹配」
+
+- 配置里是密文（`enc:v1:sm4:...`），但本机库 `~/.novabot/data/novabot.db` 里没有主密钥：
+  重装/换机器时只拷贝了配置。补回原主密钥后重启即可
+- 换过主密钥：用 `init --rotate` 重加密，不要直接改库
+- 主密钥确认丢了：只能重新填写各 provider 的 key ——
+  `python -m util.secret_cli init --force --config ~/.novabot/novabot.json --data-dir ~/.novabot/data`
+  会列出哪些条目解不开
+- 查看当前状态：`python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.novabot/data`
+
+### 思考开关不生效（关不掉 / 打不开）
+
+- 端点只认另一种写法：常见的是局域网/远程 vLLM 上的 Qwen，只认
+  `chat_template_kwargs.enable_thinking`，而默认只发顶层 `enable_thinking`
+  → 在模型或 provider 上显式配置 `"thinking_style": "enable_thinking+template_kwargs"`
+- 显式配置后可用 `/think` 验证；这类布尔写法只有 `off` / `medium` 两档
+- 想看实际发出的字段：把日志级别调到 DEBUG，日志里会打印「思考请求字段」（只有思考相关的键，不含正文与密钥）
+
 ### 上下文很快被压缩
 
 - `num_ctx` 填小了

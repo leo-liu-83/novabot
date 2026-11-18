@@ -28,6 +28,8 @@ from exception.session_exception import SessionAccessError
 from util.text_utils import ThinkTagSplitter
 from core.agent import persistence
 from core.agent.deep_agents.agent import Agent
+from const.subagents import TITLES
+from core.agent.deep_agents.subagent_gate import reset_turn as reset_subagent_turn
 from core.agent.deep_agents.compaction import compact_thread
 from core.llm.context_budget import (
     ContextLimits,
@@ -87,7 +89,7 @@ class ChatService:
         # 客户端带来的 id 必须已经属于它自己：自造 id 一律拒绝，不静默新建——
         # 否则用户以为"我的会话丢了"，而实际是拿别人的键在续聊。
         # builder 先建：它把"没指定模型"解析成配置默认值，落库要用解析后的那个
-        builder = Agent(model=input.model, enable_thinking=input.enable_thinking)
+        builder = Agent(model=input.model, thinking_level=input.resolved_thinking)
         if input.session_id:
             if not session_service.owns(input.session_id, self.ctx.uid):
                 raise SessionAccessError(msg.MSG_SESSION_NOT_OWNED)
@@ -98,7 +100,8 @@ class ChatService:
             # 会把一个"服务端刚给过、服务端又不认"的键交出去，客户端一重试就被拒。
             try:
                 self.session_id = session_service.create(
-                    model=builder.model, thinking=input.enable_thinking, user_id=self.ctx.uid
+                    model=builder.model, user_id=self.ctx.uid,
+                    thinking_level=input.resolved_thinking,
                 )
             except ValueError as exc:
                 raise SessionAccessError(str(exc), code="session.create_blocked") from exc
@@ -148,10 +151,17 @@ class ChatService:
         # 去重键用会话键——键由服务端签发且全局唯一，不会有两个用户共用一个键
         self.notices = NoticeSink(self.session_id)
 
+        # 会话第一层的唯一写入者：TUI 与 API 共用，表现层不再直接落库。
+        # 先于 agent 构建：子代理的用量回调要绑在它上面
+        self.recorder = SessionRecorder(
+            session_id=self.session_id, user_id=self.ctx.uid,
+            model=builder.model, thinking_level=input.resolved_thinking,
+        )
         self.agent = builder.get_agent(
             ctx=self.ctx, session_id=self.session_id, thread_id=self.thread_id,
             notices=self.notices, pending_images=self.pending_images,
             project=self.project,
+            usage_sink=self._record_subagent_usage,
         )
         # /compact 复用同一个摘要引擎：另建一个实例会拿到不同的事件键/归档目录，压完下一轮会重复压
         self.summarization = getattr(builder, "summarization", None)
@@ -163,11 +173,6 @@ class ChatService:
         )
 
         self.config: RunnableConfig = {"configurable": {"thread_id": self.thread_id}}
-        # 会话第一层的唯一写入者：TUI 与 API 共用，表现层不再直接落库
-        self.recorder = SessionRecorder(
-            session_id=self.session_id, user_id=self.ctx.uid,
-            model=builder.model, thinking=input.enable_thinking
-        )
         # 模型调用段号：每次usage块到达递增，think/answer事件按段交叉展示
         self._call_seq = 0
         # 已发起但未执行的工具调用参数：tool_call_id -> {name, args}，resume后执行仍能取到
@@ -213,6 +218,8 @@ class ChatService:
             logger.warning(f"会话收尾落库失败：{ex}")
 
     async def _record_turn_start(self) -> None:
+        # 新一轮清空子代理预算；resume 不经过这里，同一轮的确认不会重置计数
+        reset_subagent_turn(self.session_id)
         try:
             await asyncio.to_thread(
                 self.recorder.record_turn_start, self.input.query, self.attachments
@@ -225,6 +232,14 @@ class ChatService:
             await asyncio.to_thread(self.recorder.record_assistant, answer, think)
         except Exception as ex:
             logger.warning(f"回答落库失败（本轮继续）：{ex}")
+
+    def _record_subagent_usage(self, role: str, model: str, tokens_in: int,
+                               tokens_out: int, elapsed: float = 0.0) -> None:
+        """子代理模型回调：同步写入用量明细与合计（HTTP 层已兜住异常）。"""
+        self.recorder.record_subagent_usage(
+            model=model, agent=role, input_tokens=tokens_in,
+            output_tokens=tokens_out, elapsed=elapsed,
+        )
 
     async def _record_usage(self, tokens_in: int, tokens_out: int, elapsed: float = 0.0) -> None:
         """非流式路径没有 SSE 事件可发，直接让记录器看见与流式同形状的 usage。"""
@@ -652,7 +667,7 @@ class ChatService:
                         yield self._build_event(
                             desc, event=EventTypeEnum.TOOL_END, tool=name, ok=ok,
                             stats={
-                                "args": self._tool_args(args),
+                                "args": self._tool_args(name, args),
                                 "output": self._tool_output(getattr(msg_chunk, "content", "")),
                             },
                         )
@@ -714,7 +729,8 @@ class ChatService:
                         continue
                     if tc.get("name"):
                         yield self._build_event(
-                            name, event=EventTypeEnum.TOOL_CALL, call=self._call_seq,
+                            self._tool_label(name), event=EventTypeEnum.TOOL_CALL,
+                            call=self._call_seq,
                             stats={"index": tc.get("index") or 0})
                         entry["arg_at"] = time.monotonic()
                         continue
@@ -1171,14 +1187,43 @@ class ChatService:
         match = cls._PATH_RE.search(args_json or "")
         return f"{match.group(1)}={match.group(2)}" if match else ""
 
+    # 工具名的展示名：协议里仍是原始名，界面用这个
+    TOOL_LABELS = {"task": "子代理"}
+
     @classmethod
-    def _tool_args(cls, args_json: str) -> str:
+    def _tool_label(cls, name: str) -> str:
+        return cls.TOOL_LABELS.get(name, name)
+
+    @classmethod
+    def _subagent_parts(cls, args_json: str) -> tuple[str, str]:
+        """从 task 的参数里取「角色名, 任务描述」；参数可能是半截 JSON，解析失败按空处理。"""
+        try:
+            data = json.loads(args_json or "{}")
+        except (TypeError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        spec = str(data.get("subagent_type") or "")
+        role = {"explore": TITLES["explore"], "general-purpose": TITLES["general"]}.get(spec, spec)
+        desc = str(data.get("description") or "").strip().replace("\n", " ")
+        if len(desc) > 60:
+            desc = desc[:60] + "…"
+        return role, desc
+
+    @classmethod
+    def _tool_args(cls, name: str, args_json: str) -> str:
         """参数部分（不含工具名），给 Web 卡片的摘要行用。"""
+        if name == "task":
+            return cls._subagent_parts(args_json)[1]
         return ", ".join(cls._arg_parts(args_json))
 
     @classmethod
     def _tool_desc(cls, name: str, args_json: str) -> str:
-        return f"{name}({cls._tool_args(args_json)})"
+        if name == "task":
+            role, desc = cls._subagent_parts(args_json)
+            head = f"子代理 · {role}" if role else "子代理"
+            return f"{head}：{desc}" if desc else head
+        return f"{name}({cls._tool_args(name, args_json)})"
 
     @staticmethod
     def _tool_output(content) -> str:
