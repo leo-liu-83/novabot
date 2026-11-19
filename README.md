@@ -1,6 +1,6 @@
 # NovaBot
 
-版本：`0.3.1` ｜ [变更日志](CHANGELOG.md)
+版本：`0.3.2` ｜ [变更日志](CHANGELOG.md)
 
 ## 1. 简介
 

@@ -33,7 +33,7 @@
     return '<div class="page-head">' +
       '<div><div class="kicker">' + U.esc(I.t('管理 / REPORT')) + '</div>' +
         '<h2 class="page-title">' + U.esc(I.t('报表')) + '</h2>' +
-        '<p class="page-desc">' + U.esc(I.t('用户活跃、模型使用与 token 消耗统计。只展示聚合数据，不包含消息正文。')) + '</p>' +
+        '<p class="page-desc">' + U.esc(I.t('用户活跃、模型、技能、MCP 与搜索使用、token 消耗统计。只展示聚合数据，不包含消息正文。')) + '</p>' +
       '</div>' +
     '</div>';
   }
@@ -196,6 +196,97 @@
     '</section>';
   }
 
+  /* MCP / 网络搜索共用的排行条：名字 + 副行 + 占比条，与模型用量同一套样式 */
+  function usageRankList(rows, nameFn, subFn) {
+    const max = Math.max(1, ...rows.map((row) => row.calls || 0));
+    return '<div class="report-model-list">' + rows.slice(0, 6).map((row) => {
+      const name = nameFn(row);
+      return '<div class="report-model-row">' +
+        '<div class="report-model-main"><b title="' + U.esc(name) + '">' + U.esc(name) + '</b>' +
+          '<span class="mono-xs">' + subFn(row) + '</span></div>' +
+        '<div class="report-model-track"><span style="width:' +
+          Math.max(1, Math.round((row.calls || 0) * 100 / max)) + '%"></span></div>' +
+        '<span class="report-model-share">' + U.esc(String(row.share || 0)) + '%</span>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+
+  function searchTierLabel(tier) {
+    if (tier === 'user') return I.t('用户自备');
+    if (tier === 'global') return I.t('全局');
+    return I.t('内置');
+  }
+
+  function mcpPanel(report) {
+    const rows = report.mcp || [];
+    return '<section class="panel col-6">' +
+      '<div class="panel-head"><div class="panel-title">' + U.icon('plug') + I.t('MCP 使用') + '</div>' +
+        '<span class="kicker">' + U.num(report.summary.mcp_servers || 0) + ' SERVERS · ' +
+          U.num(report.summary.mcp_calls || 0) + ' CALLS</span></div>' +
+      '<div class="panel-body">' +
+        (rows.length
+          ? usageRankList(rows, (row) => row.server, (row) =>
+              I.t('{tools} 个工具 · {users} 位用户', {
+                tools: U.num(row.tools), users: U.num(row.users),
+              }))
+          : U.empty('plug', I.t('暂无 MCP 调用'), I.t('模型调用 MCP 工具后，这里会显示各 server 的调用占比。'))) +
+      '</div>' +
+    '</section>';
+  }
+
+  function searchPanel(report) {
+    const rows = report.search || [];
+    return '<section class="panel col-6">' +
+      '<div class="panel-head"><div class="panel-title">' + U.icon('globe') + I.t('网络搜索') + '</div>' +
+        '<span class="kicker">' + U.num(report.summary.search_calls || 0) + ' CALLS · ' +
+          U.num(report.summary.search_users || 0) + ' USERS</span></div>' +
+      '<div class="panel-body">' +
+        (rows.length
+          ? usageRankList(rows, (row) => row.provider, (row) =>
+              searchTierLabel(row.tier) + ' · ' + I.t('{n} 次', { n: U.num(row.calls) }))
+          : U.empty('globe', I.t('暂无网络搜索'), I.t('模型使用 websearch 后，这里会显示各 provider 的调用占比。'))) +
+      '</div>' +
+    '</section>';
+  }
+
+  function skillRows(report) {
+    const rows = report.skills || [];
+    if (!rows.length) {
+      return '<tr><td colspan="7" class="report-empty">' +
+        U.esc(I.t('暂无技能使用记录')) + '</td></tr>';
+    }
+    return rows.map((row) => {
+      const name = row.skill || I.t('（未命名技能）');
+      return '<tr>' +
+        '<td><div class="report-model-name"><b title="' + U.esc(name) + '">' + U.esc(name) + '</b></div></td>' +
+        '<td class="num">' + U.num(row.uses) + '</td>' +
+        '<td class="num">' + U.num(row.users) + '</td>' +
+        '<td class="num">' + U.num(row.sessions) + '</td>' +
+        '<td class="num">' + U.num(row.script_uses) + '</td>' +
+        '<td class="num">' + U.esc(String(row.share || 0)) + '%</td>' +
+        '<td class="mono-xs">' + U.esc(fmtTs(row.last_used)) + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  function skillsPanel(report) {
+    return '<section class="panel col-12">' +
+      '<div class="panel-head"><div class="panel-title">' + U.icon('shield') + I.t('技能使用') + '</div>' +
+        '<span class="kicker">' + U.num(report.summary.skills_used || 0) + ' SKILLS · ' +
+          U.num(report.summary.skill_uses || 0) + ' USES</span></div>' +
+      '<div class="table-wrap"><table class="table report-table report-skill-table"><thead><tr>' +
+        '<th>' + I.t('技能') + '</th><th class="num">' + I.t('使用') + '</th>' +
+        '<th class="num">' + I.t('用户') + '</th><th class="num">' + I.t('会话') + '</th>' +
+        '<th class="num">' + I.t('脚本') + '</th><th class="num">' + I.t('占比') + '</th>' +
+        '<th>' + I.t('最近使用') + '</th>' +
+      '</tr></thead><tbody>' + skillRows(report) + '</tbody></table></div>' +
+      '<div class="report-note">' + U.esc(I.t(
+        '共 {uses} 次使用 · {users} 位用户。统计模型读取技能正文（SKILL.md）与执行技能脚本的次数；同一会话内重复读取会重复计数。',
+        { uses: U.num(report.summary.skill_uses || 0), users: U.num(report.summary.skill_users || 0) },
+      )) + '</div>' +
+    '</section>';
+  }
+
   function userRows(report) {
     const query = String(ui().reportUserQuery || '').trim().toLowerCase();
     const rows = (report.users || []).filter((row) =>
@@ -294,6 +385,9 @@
         tokenPanel(report) +
         usersPanel(report) +
         modelsTablePanel(report) +
+        skillsPanel(report) +
+        mcpPanel(report) +
+        searchPanel(report) +
       '</div>';
   }
 

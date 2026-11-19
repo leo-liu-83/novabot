@@ -199,6 +199,18 @@ set PYTHONUTF8=1
 - NovaBot applies a Textual IME compatibility patch
 - If it still fails, use the web console
 
+### The window title has a command line and paths appended
+
+Ubuntu's default terminal, Ptyxis, has a "dynamic title": when the foreground process is not a
+shell, it appends ` — <that process's full command line>` (see `ptyxis-tab.c`, `dup_title`), so
+the title reads `NovaBot · hello — /path/python3.12 /path/main.py`.
+
+- The `novabot` launcher written by the installer deliberately does **not** exec: the foreground
+  process stays bash, which Ptyxis treats as a shell and leaves the title alone
+- Running `python main.py tui` directly still shows the suffix; use `novabot` or
+  `bash -c 'python main.py tui'` instead
+- Ptyxis 50.1 has no toggle; newer versions expose "Disable Dynamic Title" in Preferences
+
 ### “Not persistent” warning
 
 The database or checkpoint store failed to initialize; NovaBot falls back to memory mode. Chat still works, but history is lost after restart. Check `~/.novabot/data/` permissions and disk space.

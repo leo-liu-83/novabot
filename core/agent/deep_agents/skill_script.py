@@ -169,10 +169,13 @@ def run_skill_script_impl(ctx: UserCtx, skill: str, script: str,
 
 
 def build_run_skill_script_tool(ctx: UserCtx, timeout: int = DEFAULT_TIMEOUT_SECONDS,
-                                max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES):
+                                max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+                                on_skill_used=None):
     """按当前身份构造run_skill_script工具。
 
     闭包捕获ctx而非让模型传身份：模型能指定跑哪个技能的脚本，但不能指定以谁的身份跑。
+    on_skill_used 是可选的统计回调：脚本真正开跑时记一次技能使用（读 SKILL.md
+    已经记过一次，但"只跑脚本不读正文"的调用也得算上）。
     """
 
     @tool("run_skill_script")
@@ -185,8 +188,15 @@ def build_run_skill_script_tool(ctx: UserCtx, timeout: int = DEFAULT_TIMEOUT_SEC
             arguments: 传给脚本的位置参数列表，逐个原样传递
         """
         try:
-            return run_skill_script_impl(ctx, skill, script, arguments, timeout, max_output_bytes)
+            output = run_skill_script_impl(ctx, skill, script, arguments, timeout, max_output_bytes)
         except SkillScriptError as ex:
             return str(ex)
+
+        if on_skill_used is not None:
+            try:
+                on_skill_used(skill, "script")
+            except Exception:  # noqa: BLE001 - 统计失败不能把脚本结果吞掉
+                pass
+        return output
 
     return run_skill_script

@@ -211,7 +211,7 @@ GET /api/v1/models
 | GET/POST | `/admin/users` | 用户列表 / 创建 |
 | PATCH/DELETE | `/admin/users/{uid}` | 修改 / 删除 |
 | GET | `/system` | 只读系统信息 |
-| GET | `/admin/reports` | 用户活跃、模型用量与 token 统计 |
+| GET | `/admin/reports` | 用户活跃、模型用量、技能/MCP/搜索使用与 token 统计 |
 
 仅管理员或单用户机主可用。
 
@@ -223,7 +223,12 @@ GET /api/v1/models
 | `bucket` | `day` | 时间粒度，`day` / `week` |
 | `limit` | 20 | Top 用户/模型条数，范围 1–100 |
 
-返回 `range / summary / activity / tokens / models / users`，只包含账号、模型和 token 聚合，不返回消息正文。
+返回 `range / summary / activity / tokens / models / skills / mcp / search / users`，只包含账号、模型、
+技能名、MCP server/工具名、搜索 provider 与 token 聚合，不返回消息正文、技能正文、MCP 参数或搜索词。
+
+- `skills[]`：`skill / uses / users / sessions / script_uses / last_used / share`
+- `mcp[]`：`server / calls / tools / users / sessions / last_used / share`
+- `search[]`：`provider / tier / calls / users / sessions / last_used / share`（`tier` 为 `user` / `global` / `builtin`）
 
 ## 11. 项目
 

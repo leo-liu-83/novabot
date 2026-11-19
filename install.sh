@@ -798,7 +798,10 @@ LAUNCHER="$BIN_DIR/$CMD_NAME"
 tmp_launcher="$LAUNCHER.tmp.$$"
 {
   echo '#!/usr/bin/env bash'
-  printf 'exec %q %q "$@"\n' "$PY" "$PROJECT_DIR/main.py"
+  # 故意不 exec：Ptyxis（Ubuntu 默认终端）会把「前台进程」的命令行拼在窗口标题后面，
+  # 前台是 shell 时则跳过。脚本自己留在前台、TUI 作为子进程跑，标题才是干净的
+  # 「NovaBot · 会话名」。退出码照常是子进程的状态。
+  printf '%q %q "$@"\n' "$PY" "$PROJECT_DIR/main.py"
 } > "$tmp_launcher"
 chmod 755 "$tmp_launcher"
 mv "$tmp_launcher" "$LAUNCHER"

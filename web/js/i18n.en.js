@@ -631,7 +631,7 @@ window.NB_I18N_EN = {
   "nav.reports": "Reports",
   "管理 / REPORT": "Admin / REPORT",
   "报表": "Reports",
-  "用户活跃、模型使用与 token 消耗统计。只展示聚合数据，不包含消息正文。": "User activity, model usage, and token consumption. Aggregates only; no message content.",
+  "用户活跃、模型、技能、MCP 与搜索使用、token 消耗统计。只展示聚合数据，不包含消息正文。": "User activity, model, skill, MCP and search usage, and token consumption. Aggregates only; no message content.",
   "时间范围": "Time range",
   "近 {n} 天": "Last {n} days",
   "时间粒度": "Granularity",
@@ -841,5 +841,23 @@ window.NB_I18N_EN = {
   "<div class=\"field\"><label for=\"pj-rename\">项目名称</label>":
     "<div class=\"field\"><label for=\"pj-rename\">Project name</label>",
   "<div class=\"field\"><label for=\"pj-rename-desc\">项目描述</label>":
-    "<div class=\"field\"><label for=\"pj-rename-desc\">Description</label>"
+    "<div class=\"field\"><label for=\"pj-rename-desc\">Description</label>",
+  "MCP 使用": "MCP usage",
+  "{tools} 个工具 · {users} 位用户": "{tools} tools · {users} users",
+  "暂无 MCP 调用": "No MCP calls yet",
+  "模型调用 MCP 工具后，这里会显示各 server 的调用占比。": "Once the model calls MCP tools, each server's share shows up here.",
+  "网络搜索": "Web search",
+  "{n} 次": "{n} calls",
+  "用户自备": "User-provided",
+  "全局": "Global",
+  "内置": "Built-in",
+  "暂无网络搜索": "No web searches yet",
+  "模型使用 websearch 后，这里会显示各 provider 的调用占比。": "Once the model searches the web, each provider's share shows up here.",
+  "技能使用": "Skill usage",
+  "使用": "Uses",
+  "脚本": "Scripts",
+  "最近使用": "Last used",
+  "暂无技能使用记录": "No skill usage yet",
+  "（未命名技能）": "(unnamed skill)",
+  "共 {uses} 次使用 · {users} 位用户。统计模型读取技能正文（SKILL.md）与执行技能脚本的次数；同一会话内重复读取会重复计数。": "{uses} uses · {users} users. Counts reads of a skill's SKILL.md plus script runs; repeated reads within one session are counted again."
 };

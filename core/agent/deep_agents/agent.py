@@ -42,7 +42,12 @@ from .mcp_middleware import McpToolPolicyMiddleware
 from .project_backend import (
     ProjectFilesystemBackend, ProjectPathMiddleware, ProjectShellBackend,
 )
-from .skill_backend import AttachmentGuardBackend, SkillGateBackend, SkillGateShellBackend
+from .skill_backend import (
+    AttachmentGuardBackend,
+    SkillGateBackend,
+    SkillGateShellBackend,
+    SkillUsageBackend,
+)
 from .step_limit import StepLimitMiddleware
 from .subagent_gate import SubagentGateMiddleware
 from .subagents import build_subagent_specs
@@ -113,18 +118,24 @@ class Agent:
         llm = llm_manager.get_llm(self.model, self.thinking_level, session_id=session_id)
         self.max_input_tokens = getattr(llm, "max_input_tokens", None)
         self.max_output_tokens = getattr(llm, "max_tokens", 0) or 0
-        backend = self._get_backend(ctx, session_id, thread_id, project)
+        # 能力使用统计的落库回调：技能（SKILL.md/脚本）、MCP 调用、网络搜索各算一次。
+        # 统计失败只记日志，绝不影响对话本身
+        skill_usage = self._skill_usage_sink(ctx, session_id)
+        tool_usage = self._tool_usage_sink(ctx, session_id)
+        backend = self._get_backend(ctx, session_id, thread_id, project,
+                                    on_skill_used=skill_usage)
         exec_level = resolve_level(config.EXEC_LEVEL, ctx, session_id,
                                    project_mode=project is not None)
 
         # T1才挂run_skill_script；T2+走execute通道，两条路互斥（见exec_policy）
         tools = list(tools)
         if is_skill_script_enabled(exec_level):
-            tools.append(build_run_skill_script_tool(ctx))
+            tools.append(build_run_skill_script_tool(ctx, on_skill_used=skill_usage))
 
         # 网络能力不参与执行档位（E8）：搜索全身份可用，配额在服务层按uid判
         if config.WEB_SEARCH_ENABLED:
-            tools.append(build_web_search_tool(ctx, notices))
+            tools.append(build_web_search_tool(ctx, notices,
+                                               on_used=lambda source: tool_usage("search", source)))
         if config.WEB_FETCH_PERMISSION != "deny":
             tools.append(build_web_fetch_tool())
 
@@ -141,7 +152,8 @@ class Agent:
 
         # MCP工具：连接server、发现工具。逐工具的 allow/ask/deny 在调用点判（见 mcp_middleware）。
         # 与执行档位无关——MCP是独立的"远端能力"轴（见TODO E9.2）
-        mcp_tools, mcp_modes, _mcp_notes = build_mcp_tools(ctx, notices)
+        mcp_tools, mcp_modes, _mcp_notes = build_mcp_tools(
+            ctx, notices, on_used=lambda server, tool: tool_usage("mcp", server, tool))
         tools.extend(mcp_tools)
 
         # 从backend实际挂载的技能路由推导sources，插入顺序即优先级：system在前，user可覆盖同名系统技能
@@ -167,7 +179,9 @@ class Agent:
         # 只读角色不该因为主会话是 T4 就跟着获得）
         explore_tools: list = []
         if config.WEB_SEARCH_ENABLED:
-            explore_tools.append(build_web_search_tool(ctx, notices))
+            # 子代理的搜索同样计入本会话：报表看的是"会话用了什么能力"，不分主/子
+            explore_tools.append(build_web_search_tool(
+                ctx, notices, on_used=lambda source: tool_usage("search", source)))
         if config.WEB_FETCH_PERMISSION != "deny":
             explore_tools.append(build_web_fetch_tool())
         explore_tools.append(build_convert_document_tool(ctx, thread_id, allow_absolute=False))
@@ -275,10 +289,61 @@ class Agent:
 
         return [FilesystemPermission(operations=["write"], paths=denied, mode="deny")] if denied else []
 
+    @staticmethod
+    def _tool_usage_sink(ctx: UserCtx, session_id: Optional[str]):
+        """MCP / 网络搜索的写库回调。
+
+        name 语义由 kind 决定：mcp 是 server 名，search 是实际生效的档位:provider
+        （user:exa / nova-global:parallel / 内置名）。
+        """
+        uid = ctx.uid
+        sid = session_id or ""
+
+        def record(kind: str, name: str, detail: str = "") -> None:
+            if not sid or not name:
+                return
+            try:
+                from service.session.session_service import session_service
+
+                session_service.record_tool_usage(
+                    kind=kind, name=name, detail=detail, uid=uid, session_id=sid,
+                )
+            except Exception as exc:  # noqa: BLE001 - 统计失败不影响对话
+                logger.warning(f"能力使用统计写入失败（{kind}:{name}）：{exc}")
+
+        return record
+
+    @staticmethod
+    def _skill_usage_sink(ctx: UserCtx, session_id: Optional[str]):
+        """技能使用写库回调。
+
+        签名与两个调用点对齐：backend 只传技能名（read），run_skill_script 额外传
+        action="script"。session_id 缺失（未落到会话）时不记——报表按会话/用户聚合，
+        没有会话的行只会污染口径。
+        """
+        uid = ctx.uid
+        sid = session_id or ""
+
+        def record(skill: str, action: str = "read") -> None:
+            if not sid:
+                return
+            try:
+                # 延迟 import：agent 模块在服务层构建之前就会被导入（TUI/API 共用）
+                from service.session.session_service import session_service
+
+                session_service.record_skill_usage(
+                    skill=skill, uid=uid, session_id=sid, action=action,
+                )
+            except Exception as exc:  # noqa: BLE001 - 统计失败不影响对话
+                logger.warning(f"技能使用统计写入失败（{skill}）：{exc}")
+
+        return record
+
     # 按当前身份ctx构建Backend：挂载表与只读策略全部来自ctx，不读模块级路径常量
     def _get_backend(self, ctx: UserCtx, session_id: Optional[str]=None,
                      thread_id: Optional[str]=None,
-                     project: "Optional[ProjectContext]"=None):
+                     project: "Optional[ProjectContext]"=None,
+                     on_skill_used=None):
         project_root = project.path if project is not None else None
         if project_root is None:
             os.makedirs(ctx.workspace_path, exist_ok=True)
@@ -307,10 +372,12 @@ class Agent:
             # 默认backend的根就是工作区，而技能目录物理上在工作区之下（workspace/skills），
             # 它也必须挂门——否则从工作区根 glob/grep 就能绕过路由直达未放行技能
             default = SkillGateBackend(root_dir=ctx.workspace_path, virtual_mode=True,
-                                       skill_roots=(f"{ctx.workspace_path}/skills",))
+                                       skill_roots=(f"{ctx.workspace_path}/skills",),
+                                       on_skill_used=on_skill_used)
         elif backend_type == AgentBackendTypeEnum.LOCAL_SHELL:
             default = SkillGateShellBackend(root_dir=ctx.workspace_path, virtual_mode=True,
-                                            skill_roots=(f"{ctx.workspace_path}/skills",))
+                                            skill_roots=(f"{ctx.workspace_path}/skills",),
+                                            on_skill_used=on_skill_used)
         else:
             raise ValueError(f"暂不支持的Backend类型: {backend_type}")
 
@@ -318,10 +385,14 @@ class Agent:
         for mount, path in ctx.skill_mounts:
             os.makedirs(path, exist_ok=True)
             if mount == SYSTEM_SKILLS_MOUNT:
-                routes[mount] = FilesystemBackend(root_dir=path, virtual_mode=True)
+                # 系统技能全部放行，只记使用；套放行门会让未审查的脚本技能凭空消失
+                routes[mount] = SkillUsageBackend(root_dir=path, virtual_mode=True,
+                                                  skill_roots=(path,),
+                                                  on_skill_used=on_skill_used)
             else:
                 routes[mount] = SkillGateBackend(root_dir=path, virtual_mode=True,
-                                                 skill_roots=(path,))
+                                                 skill_roots=(path,),
+                                                 on_skill_used=on_skill_used)
 
         # 压缩历史/媒体/大工具结果按会话隔离：虚拟路径不变，物理落到会话目录，
         # 删除与过户只需认thread_id，不必再维护"会话→文件"的映射

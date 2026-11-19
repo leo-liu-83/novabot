@@ -281,6 +281,8 @@ class ChatScreen(CommandMixin, Screen):
         self.bind_command_input()
         self._refresh_cmd_status()
         self._refresh_identity()
+        # 回放前标题栏可能还是占位文案，窗口标题先按会话记录对齐
+        self._sync_terminal_title(self._session.get("title"))
 
         if self.first_message and not self._first_message_processed:
             self._first_message_processed = True
@@ -853,12 +855,19 @@ class ChatScreen(CommandMixin, Screen):
         self._send(event.query)
 
     def set_chat_title(self, title: str) -> None:
-        """设置聊天标题"""
+        """设置聊天标题（窗口标题跟着走，多开时能分清是哪个会话）"""
         try:
             title_label = self.query_one("#chat-title", Label)
             title_label.update(f"# {title}")
         except Exception:
             pass
+        self._sync_terminal_title(title)
+
+    def _sync_terminal_title(self, title: str | None) -> None:
+        """同步终端窗口标题；单测里的 app 桩没有这个方法时静默跳过。"""
+        sync = getattr(self.app, "set_terminal_title", None)
+        if callable(sync):
+            sync(title)
 
     # region 消息渲染（与参考实现一致的双分区流式结构）
     # 用户消息行：提问右侧带「重问」按钮；重放与实时发送共用同一形状

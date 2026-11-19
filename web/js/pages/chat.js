@@ -514,7 +514,8 @@
     return list.map((s) =>
       '<div class="chat-session" data-session="' + U.esc(s.id) + '" role="button" tabindex="0" aria-current="' + (s.id === m.ui.chatSession) + '" data-title="' + U.esc(I.t(s.title)) + '">' +
         '<div class="cs-title">' + U.esc(I.t(s.title)) + '</div>' +
-        '<div class="cs-meta"><span>' + U.esc(m.model(s.model).name) + '</span><span class="dot-sep">·</span><span>' + U.fmtTime(s.updatedAt) + '</span>' +
+        // 会话列表只留「时间 · 项目」：模型在会话头部和 /model 里都看得到，列表里重复且挤
+        '<div class="cs-meta"><span>' + U.fmtTime(s.updatedAt) + '</span>' +
           (s.projectName ? '<span class="dot-sep">·</span><span class="cs-project">' + U.icon('layers') + U.esc(s.projectName) + '</span>' : '') +
           (pendingIndex(s) >= 0 ? '<span class="dot warn" style="width:5px;height:5px;border-radius:50%;background:var(--warn)"></span>' : '') +
         '</div>' +
@@ -1787,9 +1788,6 @@
     if (!slot) return;
     slot.innerHTML = headHTML(session);
     bindHead(slot);
-    // 侧栏行里的模型名跟着变，不用重绘整个列表
-    const row = document.querySelector('.chat-session[data-session="' + session.id + '"] .cs-meta span');
-    if (row) row.textContent = NB.mock.model(session.model).name;
   }
 
   /* 速度每秒都会变：整块 innerHTML 重建会让头部控件每秒被销毁重绑一次（点击丢失、
@@ -1832,6 +1830,7 @@
     resolveInterruptForTest: resolveInterrupt,
     projectBadgeForTest: projectBadge,
     modelMenuItemsForTest: modelMenuItems,
+    sessionListForTest: sessionListHTML,
     modelMenuOptsForTest: modelMenuOpts,
     composerHTMLForTest: composerHTML,
     interruptHTMLForTest: interruptHTML,

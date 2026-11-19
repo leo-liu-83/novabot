@@ -203,7 +203,7 @@ Private skills require `layer=private` and `owner_uid` to distinguish same-name 
 | GET/POST | `/admin/users` | List/create users |
 | PATCH/DELETE | `/admin/users/{uid}` | Update/delete |
 | GET | `/system` | Read-only system information |
-| GET | `/admin/reports` | User activity, model usage, and token statistics |
+| GET | `/admin/reports` | User activity, model/skill/MCP/search usage, and token statistics |
 
 Administrator or single-user owner only.
 

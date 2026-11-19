@@ -62,7 +62,8 @@ def _report_degradation(outcome: SearchOutcome, notices: NoticeSink) -> None:
         notices.add("web:builtin:down", f"⚠ NovaBot 内置搜索通道不可用（{reasons}）")
 
 
-def build_web_search_tool(ctx: UserCtx, notices: Optional[NoticeSink] = None):
+def build_web_search_tool(ctx: UserCtx, notices: Optional[NoticeSink] = None,
+                          on_used=None):
     # 工具实例随 agent 构建，即每个请求/回合一份。模型并行发两条 websearch 时，
     # 第二条会撞上这把锁：不执行、不扣配额，只告诉模型先等已有结果。
     # 顺序补搜（第一条已完成）仍放行，保留“结果不足再补搜”的空间。
@@ -87,6 +88,14 @@ def build_web_search_tool(ctx: UserCtx, notices: Optional[NoticeSink] = None):
                 _report_degradation(outcome, notices)
             if not outcome.ok:
                 return f"[web search] {outcome.error}"
+
+            # 只记成功的一次搜索，并记下实际生效的档位（user:/nova-global:/内置），
+            # 报表按 provider 聚合时不存查询词
+            if on_used is not None:
+                try:
+                    on_used(outcome.source)
+                except Exception:  # noqa: BLE001 - 统计失败不能影响搜索结果
+                    pass
 
             # 先截断再包装：包装后截会切掉闭合标记，破坏"外部内容"边界
             text = cap_output(outcome.text, SEARCH_OUTPUT_CHAR_LIMIT)

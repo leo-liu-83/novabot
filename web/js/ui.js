@@ -165,7 +165,8 @@
       : '';
     wrap.innerHTML =
       '<div class="modal-scrim" data-close></div>' +
-      '<section class="modal ' + (opts.wide ? 'wide' : '') + '" role="dialog" aria-modal="true" aria-label="' + U.esc(opts.title || U.t('对话框')) + '">' +
+      '<section class="modal ' + (opts.wide ? 'wide' : '') + (opts.modalClass ? ' ' + opts.modalClass : '') +
+        '" role="dialog" aria-modal="true" aria-label="' + U.esc(opts.title || U.t('对话框')) + '">' +
         '<header class="modal-head">' +
           '<div>' + (opts.kicker ? '<div class="kicker">' + U.esc(opts.kicker) + '</div>' : '') +
             '<h2>' + U.esc(opts.title || '') + '</h2></div>' +

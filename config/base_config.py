@@ -28,7 +28,7 @@ class BaseConfig(BaseSettings):
     APP_ENV: str = "dev"  # 环境变量
     APP_NAME: str = "NovaBot"  # 应用名称
     APP_DESC: str = "Nova智能体"  # 应用描述
-    APP_VERSION: str = "0.3.1"  # 应用版本
+    APP_VERSION: str = "0.3.2"  # 应用版本
     APP_LOG_PATH: str = ""  # 应用日志目录
     APP_LOG_NAME: str = "nova_bot"  # 应用日志文件名
     APP_LOG_ROTATION: str = "5"  # 应用日志文件切换大小

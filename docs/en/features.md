@@ -117,6 +117,8 @@ Hard-blocked destructive commands are rejected at every level. See [Security](se
 ## 10. Interfaces
 
 - TUI: Textual; `Ctrl+Q` exit, `Ctrl+T` theme
+- The TUI sets the terminal window title to `NovaBot · session title` (OSC 2), so several open
+  terminals are easy to tell apart; it is cleared on exit and handed back to the terminal
 - Web: browser console with responsive layout
 - Chinese/English: Web top bar, TUI `/lang`
 - Themes: light / dark / system (Web)
@@ -135,6 +137,13 @@ Administrators can open **Reports** for aggregate analytics:
 
 - User activity: active users in range, DAU/WAU/MAU, new users, sessions, turns
 - Model usage: calls, users, token share, and top models
+- Skill usage: uses, users/sessions, script runs, share, and last-used time per skill
+- Skill counting: one use per successful first-page read of a skill's `SKILL.md`, or one per
+  `run_skill_script` run; other files in the skill directory do not add a second use, and
+  `ls`/`grep` (seeing the name only) do not count
+- MCP usage: calls, tool count, users/sessions, and share per server (successful calls only)
+- Web search: calls and share per provider and tier (user-provided / global / built-in);
+  queries are never recorded
 - Token consumption: input/output trend, per-turn average, top users and models
 - Time ranges: last 7 / 30 / 90 days; granularity: daily or weekly
 - Aggregates only; message content is never returned

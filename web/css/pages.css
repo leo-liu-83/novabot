@@ -173,7 +173,8 @@
   position: relative;
   display: block;
   width: 100%;
-  padding: 9px 9px 9px 10px;
+  /* 上留白 10px，下留白比上面少 2px：副行是小字号，等值时看起来偏松 */
+  padding: 10px 9px 8px 10px;
   border: 1px solid transparent;
   background: none;
   text-align: left;
@@ -205,7 +206,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 10px;   /* 标题与副行拉开，副行整体下移 */
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--faint);
@@ -1504,6 +1505,13 @@
 .report-model-table th:nth-child(5), .report-model-table td:nth-child(5) { width: 13%; }
 .report-model-table th:nth-child(6), .report-model-table td:nth-child(6) { width: 13%; }
 .report-model-table th:nth-child(7), .report-model-table td:nth-child(7) { width: 12%; }
+.report-skill-table th:nth-child(1), .report-skill-table td:nth-child(1) { width: 28%; }
+.report-skill-table th:nth-child(2), .report-skill-table td:nth-child(2) { width: 10%; }
+.report-skill-table th:nth-child(3), .report-skill-table td:nth-child(3) { width: 10%; }
+.report-skill-table th:nth-child(4), .report-skill-table td:nth-child(4) { width: 10%; }
+.report-skill-table th:nth-child(5), .report-skill-table td:nth-child(5) { width: 10%; }
+.report-skill-table th:nth-child(6), .report-skill-table td:nth-child(6) { width: 10%; }
+.report-skill-table th:nth-child(7), .report-skill-table td:nth-child(7) { width: 22%; }
 .report-user-cell .report-user { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .report-user-cell .report-user b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .report-user-cell .report-user span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1770,10 +1778,23 @@
   white-space: pre-wrap;
 }
 
-/* AGENTS.md 编辑：等宽、可调整高度 */
+/* AGENTS.md 编辑：滚动条长在编辑器里，弹窗窗体本身不滚 */
+.modal.agents-modal .modal-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;      /* 窗体不滚：内容超出时由 textarea 自己滚 */
+  min-height: 0;
+}
+.modal.agents-modal .modal-body > .stack {
+  flex: 1 1 auto;
+  min-height: 0;         /* 允许在矮屏幕上收缩，而不是把底部裁掉 */
+}
 .agents-editor {
-  min-height: 330px;
-  resize: vertical;
+  flex: 1 1 auto;
+  min-height: 0;
+  resize: none;          /* 高度由弹窗分配，拖动会撑破窗体 */
+  overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;

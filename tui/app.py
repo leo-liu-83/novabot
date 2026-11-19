@@ -23,6 +23,7 @@ from .screens.auth import needs_admin_setup, persist_login, restore_login, switc
 from .screens.sessions import create_session
 from .widgets import CustomTextArea
 from .windows_ime import apply_windows_ime_patch
+from . import terminal_title
 from service.attachment.draft_cleanup import cleanup_stale_drafts
 from service.user.user_service import UserCtx, user_service
 
@@ -89,6 +90,8 @@ class NovaBotApp(App):
         self.current_theme_index = 0
 
         switch_identity(restore_login())
+        # 终端窗口标题：Textual 不管这个，先落到应用名，进会话后再由 ChatScreen 补上标题
+        self.set_terminal_title()
 
         # 多用户模式但本机还没有管理员：必须先完成建管理员才能使用NovaBot。
         # 取消输入框只会退回这个页面，不放行——首个admin决定谁有权提权，不能靠"不填"跳过。
@@ -105,6 +108,12 @@ class NovaBotApp(App):
     async def on_unmount(self) -> None:
         """退出时显式关掉checkpoint连接：atexit只是兜底，不能保证WAL落盘。"""
         await persistence.shutdown()
+        # 别把窗口标题留在「NovaBot · 某会话」上：交还终端自己管
+        terminal_title.restore(self)
+
+    def set_terminal_title(self, session_title: str | None = None) -> None:
+        """设置终端窗口标题。没有会话时只显示应用名。"""
+        terminal_title.apply(self, terminal_title.window_title(session_title, config.APP_NAME))
 
     def _finish_admin_setup(self, ctx: UserCtx, token: str) -> None:
         """建管理员完成：落登录态、切换身份，再进正常流程"""

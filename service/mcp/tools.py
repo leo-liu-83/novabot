@@ -227,7 +227,8 @@ def build_mcp_list_tool(entries: list) -> StructuredTool:
 
 def build_mcp_call_tool(entries: list, *,
                         log: Optional[Callable[[str], None]] = None,
-                        on_error: Optional[Callable[[], None]] = None) -> StructuredTool:
+                        on_error: Optional[Callable[[], None]] = None,
+                        on_used: Optional[Callable[[str, str], None]] = None) -> StructuredTool:
     """调用工具：按server+工具名分发（延迟发现的第二跳）"""
     def _call(server: str, tool: str, arguments: Optional[dict] = None) -> str:
         target = next((e for e in entries
@@ -249,6 +250,13 @@ def build_mcp_call_tool(entries: list, *,
             if on_error is not None:
                 on_error()
             return f"[MCP调用失败] {err}"
+
+        # 统计只认调用成功：失败是"没连上/工具报错"，算使用会把故障也报成活跃
+        if on_used is not None:
+            try:
+                on_used(target.server, target.name)
+            except Exception:  # noqa: BLE001 - 统计失败不能影响工具结果
+                pass
 
         raw = cap_output(raw, MCP_OUTPUT_CHAR_LIMIT)
         return wrap_mcp_result(raw, target.server, target.name, log=log)

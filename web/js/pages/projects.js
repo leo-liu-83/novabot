@@ -317,13 +317,14 @@
       kicker: 'AGENTS.MD',
       title: I.t(exists ? 'projects.agentsEditorTitleView' : 'projects.agentsEditorTitleCreate'),
       wide: true,
+      modalClass: 'agents-modal',
       body: '<div class="stack">' +
         '<div class="banner steel">' + U.icon('file') +
           '<div>' + U.esc(hint) + '</div>' +
         '</div>' +
         (exists ? '<div class="muted agents-meta" data-agents-meta>' +
           U.esc(I.t('projects.agentsEditorPath')) + '</div>' : '') +
-        '<textarea class="input agents-editor" data-agents-content rows="18" ' +
+        '<textarea class="input agents-editor" data-agents-content rows="24" ' +
           'spellcheck="false" maxlength="131072">' + U.esc(content) + '</textarea>' +
       '</div>',
       footer,

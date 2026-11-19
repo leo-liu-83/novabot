@@ -35,7 +35,7 @@ def _connect_and_list(uid: str, server: dict) -> tuple[dict, McpSession, list[di
 
 
 def build_mcp_tools(ctx: UserCtx, notices: Optional[NoticeSink] = None,
-                    servers: Optional[list] = None) -> tuple[list[BaseTool], dict[tuple[str, str], str], list[str]]:
+                    servers: Optional[list] = None, on_used=None) -> tuple[list[BaseTool], dict[tuple[str, str], str], list[str]]:
     """为当前身份装配MCP工具。
 
     返回 (工具列表, 每个工具的生效模式, 提示信息)。生效模式是
@@ -121,7 +121,7 @@ def build_mcp_tools(ctx: UserCtx, notices: Optional[NoticeSink] = None,
 
     tools: list[BaseTool] = [
         build_mcp_list_tool(entries),
-        build_mcp_call_tool(entries, on_error=_invalidate),
+        build_mcp_call_tool(entries, on_error=_invalidate, on_used=on_used),
     ]
 
     # ask 不再整体挂 interrupt：两个元工具共用一个工具名，按工具名挂只会

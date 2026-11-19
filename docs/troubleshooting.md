@@ -204,6 +204,17 @@ set PYTHONUTF8=1
 - NovaBot 会尝试为 Textual 的 Windows IME 问题安装兼容补丁
 - 仍异常时可使用 Web 控制台
 
+### 窗口标题后面跟了一串路径和文件名
+
+Ubuntu 默认终端 Ptyxis 的“动态标题”：前台进程不是 shell 时，它会在窗口标题后面追加
+` — <该进程的完整命令行>`（见 Ptyxis 源码 `ptyxis-tab.c` 的 `dup_title`），所以会看到
+`NovaBot · 你好 — /path/python3.12 /path/main.py`。
+
+- 安装器生成的 `novabot` 启动器**故意不 exec**：前台留在 bash 上，Ptyxis 判定为 shell
+  就不再追加，标题只剩 `NovaBot · 会话名`
+- 直接 `python main.py tui` 仍会出现这一段；换成 `novabot` 或 `bash -c 'python main.py tui'` 启动即可
+- Ptyxis 50.1 没有开关；更新版本在“首选项 → 关闭动态标题”（Disable Dynamic Title）里可以全局关掉
+
 ### 提示“不持久化”
 
 数据库或 checkpoint 初始化失败，NovaBot 降级为内存模式：

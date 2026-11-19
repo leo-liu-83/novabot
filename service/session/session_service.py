@@ -81,6 +81,40 @@ CREATE INDEX IF NOT EXISTS idx_usage_turn ON usage_events(turn_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_backfill ON usage_events(turn_id, model)
     WHERE source = 'backfill';
 
+-- 技能使用明细：模型读到某个技能的 SKILL.md、或执行了技能脚本时落一行。
+-- 技能调用发生在工具层，没有 usage 事件可依附，因此单独记；只记技能名与时间，
+-- 不记提示词或脚本内容。
+CREATE TABLE IF NOT EXISTS skill_usage_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid         TEXT NOT NULL DEFAULT '',
+    session_id  TEXT NOT NULL DEFAULT '',
+    skill       TEXT NOT NULL DEFAULT '',
+    -- read=读了 SKILL.md，script=通过 run_skill_script 执行脚本
+    action      TEXT NOT NULL DEFAULT 'read',
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_time ON skill_usage_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage_events(skill, created_at);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_uid ON skill_usage_events(uid, created_at);
+
+-- MCP / 网络搜索的调用明细：一次成功调用一行。
+-- 与技能统计同属"能力使用"：报表只需要名字与时间，不记录参数、查询词或返回内容。
+CREATE TABLE IF NOT EXISTS tool_usage_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid         TEXT NOT NULL DEFAULT '',
+    session_id  TEXT NOT NULL DEFAULT '',
+    -- mcp=调用MCP工具；search=网络搜索
+    kind        TEXT NOT NULL DEFAULT '',
+    -- mcp: server 名；search: 实际生效的档位:provider（user:x / nova-global:x / 内置名）
+    name        TEXT NOT NULL DEFAULT '',
+    -- mcp: 工具名；search: 空
+    detail      TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_usage_kind_time ON tool_usage_events(kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_usage_name_time ON tool_usage_events(name, created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_usage_uid_time ON tool_usage_events(uid, created_at);
+
 -- 一个活跃 turn 一条租约；删除先立 tombstone 阻止新租约，再等现有请求释放。
 CREATE TABLE IF NOT EXISTS session_leases (
     lease_id   TEXT PRIMARY KEY,
@@ -562,6 +596,41 @@ class SessionService(SqliteService):
             )
             conn.commit()
 
+    def record_skill_usage(self, *, skill: str, uid: str, session_id: str,
+                           action: str = "read", created_at: Optional[int] = None) -> None:
+        """一次技能使用落一行明细。
+
+        技能调用发生在工具层（读 SKILL.md / 跑技能脚本），没有模型 usage 事件可依附。
+        写失败不能让正在跑的这一轮崩掉：调用方负责吞掉异常并记日志。
+        """
+        name = (skill or "").strip()
+        if not name:
+            return
+        self._execute(
+            "INSERT INTO skill_usage_events (uid, session_id, skill, action, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (uid or "", session_id or "", name,
+             "script" if str(action or "").lower() == "script" else "read",
+             int(created_at if created_at is not None else time.time())),
+        )
+
+    def record_tool_usage(self, *, kind: str, name: str, uid: str, session_id: str,
+                          detail: str = "", created_at: Optional[int] = None) -> None:
+        """一次 MCP / 网络搜索调用落一行明细。
+
+        与技能统计分开建表：两者的聚合维度不同（MCP 看 server+工具，搜索看 provider 档位），
+        混在一张表里只会让报表查询到处写 CASE。写失败同样由调用方吞掉。
+        """
+        k = str(kind or "").strip()
+        if k not in ("mcp", "search") or not name:
+            return
+        self._execute(
+            "INSERT INTO tool_usage_events (uid, session_id, kind, name, detail, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (uid or "", session_id or "", k, str(name),
+             str(detail or ""), int(created_at if created_at is not None else time.time())),
+        )
+
     def message_created_at(self, message_id: int, user_id: str=DEFAULT_USER_ID) -> Optional[int]:
         """读某条消息的时间：resume 分段没有自己的回合起点，用它还原自然日归属。"""
         rows = self._query(
@@ -803,6 +872,20 @@ class SessionService(SqliteService):
         return f"date({column}, 'unixepoch', 'localtime')"
 
     @staticmethod
+    def _search_tier(source: str) -> str:
+        """搜索来源档位：user（用户自备）/ global（全局配置）/ builtin（内置兜底）。"""
+        tier, sep, _ = (source or "").partition(":")
+        if not sep:
+            return "builtin"
+        return "global" if tier == "nova-global" else (tier or "builtin")
+
+    @staticmethod
+    def _search_provider(source: str) -> str:
+        """搜索来源里的 provider 名：去掉档位前缀。"""
+        tier, sep, name = (source or "").partition(":")
+        return name if sep and name else (source or "")
+
+    @staticmethod
     def _share(part: int, total: int) -> float:
         return round(part * 100.0 / total, 1) if total else 0.0
 
@@ -982,6 +1065,111 @@ class SessionService(SqliteService):
                 "backfill_calls": int(row["backfill_calls"] or 0),
             })
 
+        # 技能使用：一次读取 SKILL.md / 执行技能脚本算一次。技能是"能力"，不是模型调用，
+        # 因此独立成表；这里只做聚合，不返回技能正文。
+        skill_uses = count(
+            "SELECT COUNT(*) AS n FROM skill_usage_events "
+            "WHERE created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+        skills_used = count(
+            "SELECT COUNT(DISTINCT skill) AS n FROM skill_usage_events "
+            "WHERE created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+        skill_users = count(
+            "SELECT COUNT(DISTINCT uid) AS n FROM skill_usage_events "
+            "WHERE created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+        skills = []
+        for row in self._query(
+            "SELECT skill, COUNT(*) AS uses, COUNT(DISTINCT uid) AS users, "
+            "COUNT(DISTINCT session_id) AS sessions, MAX(created_at) AS last_used, "
+            "COALESCE(SUM(CASE WHEN action = 'script' THEN 1 ELSE 0 END), 0) AS script_uses "
+            "FROM skill_usage_events WHERE created_at >= ? AND created_at < ? "
+            "GROUP BY skill ORDER BY uses DESC, skill LIMIT ?",
+            (start_ts, end_ts, limit),
+        ):
+            uses = int(row["uses"] or 0)
+            skills.append({
+                "skill": row["skill"] or "",
+                "uses": uses,
+                "users": int(row["users"] or 0),
+                "sessions": int(row["sessions"] or 0),
+                "script_uses": int(row["script_uses"] or 0),
+                "last_used": int(row["last_used"] or 0),
+                "share": self._share(uses, skill_uses),
+            })
+
+        # MCP / 网络搜索：一次成功调用一行。搜索只记"哪一档 provider"生效，
+        # 不记查询词；MCP 只记 server + 工具名，不记参数。
+        mcp_calls = count(
+            "SELECT COUNT(*) AS n FROM tool_usage_events "
+            "WHERE kind = 'mcp' AND created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+        mcp_servers = count(
+            "SELECT COUNT(DISTINCT name) AS n FROM tool_usage_events "
+            "WHERE kind = 'mcp' AND created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+        mcp_users = count(
+            "SELECT COUNT(DISTINCT uid) AS n FROM tool_usage_events "
+            "WHERE kind = 'mcp' AND created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+        search_calls = count(
+            "SELECT COUNT(*) AS n FROM tool_usage_events "
+            "WHERE kind = 'search' AND created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+        search_users = count(
+            "SELECT COUNT(DISTINCT uid) AS n FROM tool_usage_events "
+            "WHERE kind = 'search' AND created_at >= ? AND created_at < ?",
+            (start_ts, end_ts),
+        )
+
+        mcp = []
+        for row in self._query(
+            "SELECT name, COUNT(*) AS calls, COUNT(DISTINCT detail) AS tools, "
+            "COUNT(DISTINCT uid) AS users, COUNT(DISTINCT session_id) AS sessions, "
+            "MAX(created_at) AS last_used FROM tool_usage_events "
+            "WHERE kind = 'mcp' AND created_at >= ? AND created_at < ? "
+            "GROUP BY name ORDER BY calls DESC, name LIMIT ?",
+            (start_ts, end_ts, limit),
+        ):
+            row_calls = int(row["calls"] or 0)
+            mcp.append({
+                "server": row["name"] or "",
+                "calls": row_calls,
+                "tools": int(row["tools"] or 0),
+                "users": int(row["users"] or 0),
+                "sessions": int(row["sessions"] or 0),
+                "last_used": int(row["last_used"] or 0),
+                "share": self._share(row_calls, mcp_calls),
+            })
+
+        search = []
+        for row in self._query(
+            "SELECT name, COUNT(*) AS calls, COUNT(DISTINCT uid) AS users, "
+            "COUNT(DISTINCT session_id) AS sessions, MAX(created_at) AS last_used "
+            "FROM tool_usage_events WHERE kind = 'search' AND created_at >= ? AND created_at < ? "
+            "GROUP BY name ORDER BY calls DESC, name LIMIT ?",
+            (start_ts, end_ts, limit),
+        ):
+            row_calls = int(row["calls"] or 0)
+            search.append({
+                # name 形如 user:exa / nova-global:parallel / keenable（内置）
+                "provider": self._search_provider(row["name"] or ""),
+                "tier": self._search_tier(row["name"] or ""),
+                "calls": row_calls,
+                "users": int(row["users"] or 0),
+                "sessions": int(row["sessions"] or 0),
+                "last_used": int(row["last_used"] or 0),
+                "share": self._share(row_calls, search_calls),
+            })
+
         users = self._query(
             "SELECT uid, username, is_admin, created_at FROM users "
             "ORDER BY created_at ASC, uid ASC"
@@ -1079,10 +1267,21 @@ class SessionService(SqliteService):
                 "tokens_total": tokens_total,
                 "avg_tokens_per_turn": round(tokens_total / turns, 1) if turns else 0.0,
                 "avg_tokens_per_user": round(tokens_total / active_users, 1) if active_users else 0.0,
+                "skill_uses": skill_uses,
+                "skills_used": skills_used,
+                "skill_users": skill_users,
+                "mcp_calls": mcp_calls,
+                "mcp_servers": mcp_servers,
+                "mcp_users": mcp_users,
+                "search_calls": search_calls,
+                "search_users": search_users,
             },
             "activity": [activity[key] for key in keys],
             "tokens": [tokens[key] for key in keys],
             "models": models,
+            "skills": skills,
+            "mcp": mcp,
+            "search": search,
             "users": user_rows[:limit],
         }
 

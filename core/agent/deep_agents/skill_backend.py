@@ -8,7 +8,8 @@
 
 import logging
 import os
-from typing import Optional
+from typing import Callable, Optional
+from pathlib import PurePosixPath
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import (
@@ -23,8 +24,69 @@ from service.skill.skill_catalog import is_skill_hidden
 
 logger = logging.getLogger(__name__)
 
+SKILL_FILENAME = "SKILL.md"
 
-class SkillGateBackend(FilesystemBackend):
+# 回调只拿技能名（默认 read；脚本通道额外带 action），写库由装配层决定
+SkillUsageSink = Callable[..., None]
+
+
+class _SkillUsageMixin:
+    """把「模型读到 SKILL.md」记成一次技能使用。
+
+    只认 SKILL.md：技能目录里的脚本、参考文档属于同一次调用，
+    逐个计数会把"用了一次技能"放大成好几次。ls/glob/grep 不算使用——
+    那只是看见了技能名，正文还没进上下文。
+
+    回调失败绝不能让读文件失败：统计只是旁路。
+    """
+
+    _skill_roots: list[str]
+    _on_skill_used: Optional[SkillUsageSink] = None
+
+    def _vprefix(self, root: str) -> Optional[str]:
+        """技能根相对本backend的虚拟路径前缀；根不在backend内则返回None（无从守卫）。"""
+        rel = os.path.relpath(root, os.path.abspath(str(self.cwd)))
+        if rel == ".":
+            return ""
+        if rel == ".." or rel.startswith(".." + os.sep):
+            return None
+        return "/" + rel.replace(os.sep, "/")
+
+    def _skill_name_for(self, file_path: str) -> str:
+        """从 SKILL.md 的虚拟路径反推技能名；不是 SKILL.md 或不在技能根下则返回空。"""
+        path = "/" + str(file_path or "").lstrip("/")
+        if PurePosixPath(path).name != SKILL_FILENAME:
+            return ""
+
+        for root in self._skill_roots:
+            prefix = self._vprefix(root)
+            if prefix is None:
+                continue
+            # 默认backend 的根就是工作区，技能在 /skills/<name>/ 之下；
+            # 技能挂载点自己的 backend 前缀为空，路径直接从 <name>/ 开始
+            if prefix and path != prefix and not path.startswith(prefix + "/"):
+                continue
+            rest = path[len(prefix):].lstrip("/")
+            if not rest or "/" not in rest:
+                continue
+            return rest.split("/", 1)[0]
+
+        return ""
+
+    def _notify_skill_read(self, file_path: str, result, offset: int = 0) -> None:
+        # 只认第一页：长技能正文会分页读，按页计数等于把一次调用算成好几次
+        if offset or getattr(result, "error", None):
+            return
+        name = self._skill_name_for(file_path)
+        if not name or self._on_skill_used is None:
+            return
+        try:
+            self._on_skill_used(name)
+        except Exception as exc:  # noqa: BLE001 - 统计失败不影响读文件
+            logger.warning(f"技能使用统计失败（{name}）：{exc}")
+
+
+class SkillGateBackend(_SkillUsageMixin, FilesystemBackend):
     """执行"放行门"：未放行的技能，其目录、正文、glob/grep 命中一律不可见。
 
     必须同时守五个入口。只挡 `ls` 是不够的——实测（E8.11 漏洞）三条漏径：
@@ -40,20 +102,13 @@ class SkillGateBackend(FilesystemBackend):
     路径解析与判定属执行权限层（exec_policy），那里拿不到身份上下文。
     """
 
-    def __init__(self, root_dir, skill_roots=(), virtual_mode: bool = True, **kwargs):
+    def __init__(self, root_dir, skill_roots=(), virtual_mode: bool = True,
+                 on_skill_used: Optional[SkillUsageSink] = None, **kwargs):
         super().__init__(root_dir, virtual_mode=virtual_mode, **kwargs)
         self._skill_roots = [os.path.abspath(str(r)) for r in skill_roots]
+        self._on_skill_used = on_skill_used
 
     # ── 门判定 ──────────────────────────────────────────────
-
-    def _vprefix(self, root: str) -> Optional[str]:
-        """技能根相对本backend的虚拟路径前缀；根不在backend内则返回None（无从守卫）。"""
-        rel = os.path.relpath(root, os.path.abspath(str(self.cwd)))
-        if rel == ".":
-            return ""
-        if rel == ".." or rel.startswith(".." + os.sep):
-            return None
-        return "/" + rel.replace(os.sep, "/")
 
     def _skill_is_hidden(self, skill_dir: str) -> bool:
         # 判据与执行门共用（skill_catalog.is_skill_hidden）：两边各写一份必然漂移，
@@ -154,7 +209,10 @@ class SkillGateBackend(FilesystemBackend):
         if hidden and self._is_hidden_path(file_path, hidden):
             return ReadResult(error=f"Path '{file_path}': path_not_found")
 
-        return super().read(file_path, offset=offset, limit=limit)
+        # 未放行的技能不计使用：模型根本读不到它的正文
+        result = super().read(file_path, offset=offset, limit=limit)
+        self._notify_skill_read(file_path, result, offset)
+        return result
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         hidden = self._hidden_vpaths()
@@ -169,6 +227,25 @@ class SkillGateBackend(FilesystemBackend):
             else:
                 responses.append(super().download_files([path])[0])
         return responses
+
+
+class SkillUsageBackend(_SkillUsageMixin, FilesystemBackend):
+    """系统技能挂载用的后端：只记使用，不加放行门。
+
+    系统技能是随包发布的，本来就全部可见；套 SkillGateBackend 会让"未审查"
+    的判定渗进系统层（脚本类技能未批准就会凭空消失），所以这里只做统计。
+    """
+
+    def __init__(self, root_dir, skill_roots=(), on_skill_used: Optional[SkillUsageSink] = None,
+                 **kwargs):
+        super().__init__(root_dir, **kwargs)
+        self._skill_roots = [os.path.abspath(str(r)) for r in skill_roots]
+        self._on_skill_used = on_skill_used
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        result = super().read(file_path, offset=offset, limit=limit)
+        self._notify_skill_read(file_path, result, offset)
+        return result
 
 
 class AttachmentGuardBackend(FilesystemBackend):
