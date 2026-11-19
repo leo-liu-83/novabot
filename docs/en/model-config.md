@@ -69,8 +69,11 @@ Do not include `/chat/completions` in `base_url`.
 | `dynamic_models` | No | Discover models from `/models` |
 | `models_url` | No | Discovery URL; defaults to `base_url + /models` |
 
-> A provider's `key` / `api_key` may be ciphertext (`enc:v1:sm4:...`) and is decrypted on
-> load; plaintext keeps working. See
+> A provider's `key` / `api_key` may be ciphertext (`enc:v1:sm4:...`), and so may any value
+> under `headers`; the whole config is decrypted on load, and plaintext keeps working.
+> Install scripts only encrypt `key` fields, so paste header ciphertext yourself (put the
+> value in a `key` field temporarily, run `python -m util.secret_cli encrypt-config`, then copy
+> the result); an undecryptable header makes that request fail, never sending the ciphertext. See
 > [configuration §10.5](configuration.md#105-optional-key-encryption) for the master key.
 
 ## 4. Model fields
@@ -377,7 +380,7 @@ intranet/qwen3-32b
 
 ## 12. Security
 
-- Keys and headers are plaintext in `~/.novabot/novabot.json`
+- Keys and headers are plaintext in `~/.novabot/novabot.json` by default; `enc:v1:sm4:...` ciphertext is also accepted
 - Do not commit or share the file
 - Treat intranet tokens like model keys
 

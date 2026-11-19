@@ -15,6 +15,7 @@ from typing import Optional
 
 from config import config
 from service.db_base import SqliteService
+from util.secrets import is_ciphertext
 
 # 每用户可连接的server数量上限（用户层）。系统层不占用户额度——
 # 否则用户额度会被全局配置占掉，用户自己一个都连不上。
@@ -22,6 +23,11 @@ DEFAULT_MAX_USER_SERVERS = 3
 
 # 每个server的审批模式：ask=每次确认（默认）、allow=信任免确认、deny=不用
 MCP_MODES = ("ask", "allow", "deny")
+
+
+def _ciphertext_headers(headers: dict) -> bool:
+    """请求头里是否还有没解开的密文：这种值不能当 token 发给 MCP server。"""
+    return any(is_ciphertext(value) for value in (headers or {}).values())
 
 
 def resolve_tool_mode(server_mode: str, tool_mode: Optional[str]) -> str:
@@ -332,11 +338,18 @@ class McpRegistry(SqliteService):
         for entry in (getattr(config, "MCP_SYSTEM_SERVERS", None) or []):
             if not entry.get("enabled", True):
                 continue
+            headers = entry.get("headers") or {}
+            if _ciphertext_headers(headers):
+                # 解不开的密文不能当 token 发给 MCP server，跳过并说明原因
+                notes.append(
+                    f"MCP server「{entry.get('name', '')}」的请求头仍是密文"
+                    "（主密钥缺失或与配置不匹配），已跳过")
+                continue
             servers.append({
                 "layer": "system",
                 "name": entry.get("name", ""),
                 "url": entry.get("url", ""),
-                "headers": entry.get("headers") or {},
+                "headers": headers,
                 "mode": "allow",
             })
 
@@ -355,11 +368,16 @@ class McpRegistry(SqliteService):
             usable = usable[:limit]
 
         for row in usable:
+            headers = row["headers"] or {}
+            if _ciphertext_headers(headers):
+                notes.append(
+                    f"MCP server「{row['name']}」的请求头仍是密文，已跳过")
+                continue
             servers.append({
                 "layer": "user",
                 "name": row["name"],
                 "url": row["url"],
-                "headers": row["headers"] or {},
+                "headers": headers,
                 "mode": row.get("mode") or "ask",
             })
 

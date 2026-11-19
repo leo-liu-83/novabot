@@ -248,9 +248,12 @@ python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.
 ```
 
 - Rotate with `init --rotate` (decrypts everything with the old key, then rewrites with the
-  new one; aborts without writing if any value cannot be decrypted)
+  new one; aborts without writing if any value cannot be decrypted). If a plain note happens
+  to start with `enc:v1:sm4:`, pass `--skip-broken` to leave it untouched
 - Plaintext values keep working; the system page shows the encryption state, fingerprint and
   how many plaintext keys remain
+- **Any** config value starting with `enc:v1:sm4:` is decrypted on load (including `headers`);
+  an undecryptable request header makes that request fail instead of being sent
 - The master key lives in the `app_secrets` table of `~/.novabot/data/novabot.db`; see
   [Security](security.md#71-optional-key-encryption) for the threat model
 

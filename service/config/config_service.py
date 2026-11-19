@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Optional
 
 from util.base import base_util
-from util.secrets import SecretError, SecretStore, is_ciphertext
+from util.secrets import SecretStore, reveal_tree
 from exception.config_exception import ConfigFilesError
 from .dtos import *
 
@@ -197,16 +197,6 @@ class ConfigService:
 
         return config
 
-    def _reveal_secret(self, value: Optional[str], label: str) -> Optional[str]:
-        if not value or not is_ciphertext(value):
-            return value
-        try:
-            return self._secrets.reveal(value)
-        except SecretError as exc:
-            # 配置加载早于日志系统就绪，只能打 stderr
-            print(f"[CONFIG] {label} 解密失败：{exc}（保留密文）", file=sys.stderr)
-            return value
-
     # json文件转dto
     def _json_to_dto(self, config_file: str) -> Optional[ConfigDto]:
         if not config_file or not os.path.exists(config_file):
@@ -219,6 +209,10 @@ class ConfigService:
 
         with open(config_file, "r", encoding="utf-8") as f:
             jdata = json.load(f)
+            for path in reveal_tree(jdata, self._secrets):
+                # 配置加载早于日志系统就绪，只能打 stderr
+                print(f"[CONFIG] {path} 解密失败：主密钥缺失或不匹配（保留密文）",
+                      file=sys.stderr)
             if jdata:
                 # provider解析
                 j_providers = jdata.get("models", None)
@@ -229,8 +223,7 @@ class ConfigService:
                             name=pv.get("name", ""),
                             base_url=pv.get("base_url", ""),
                             api=pv.get("api", ""),
-                            api_key=self._reveal_secret(
-                                pv.get("key", "") or pv.get("api_key", ""), f"models.{pk}"),
+                            api_key=pv.get("key", "") or pv.get("api_key", ""),
                             host=pv.get("host", ""),
                             headers=_headers(pv.get("headers", None)),
                             dynamic_models=pv.get("dynamic_models", False) is True,
@@ -324,9 +317,7 @@ class ConfigService:
                             enabled=j_search.get("enabled"),
                             providers=[WebSearchProviderDto(
                                 provider=p.get("provider", ""),
-                                key=self._reveal_secret(
-                                    p.get("key") or p.get("api_key"),
-                                    f"web.search.providers[{p.get('provider', '')}]"),
+                                key=p.get("key") or p.get("api_key"),
                                 endpoint=p.get("endpoint"),
                             ) for p in (j_search or {}).get("providers", []) if isinstance(p, dict)],
                         ) if isinstance(j_search, dict) else None,

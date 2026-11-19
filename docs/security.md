@@ -126,7 +126,9 @@ python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.
 - 挡不住能读 `~/.novabot/data/novabot.db` 的本机进程 —— 主密钥就在同一个库里；
 - 挡不住能改配置的人（他可以把 `base_url` 指向自己的服务器）；
 - **备份整个 `~/.novabot` 会把主密钥和密文一起带走**，那种场景等于没有加密；
-- 不加密 `headers`、MCP `headers`、`data/login.json` 的登录 token。
+- 不自动加密 `headers`、MCP `headers`、`data/login.json` 的登录 token；但读取时会解密
+  配置里任何以 `enc:v1:sm4:` 开头的值，所以 header 可以手贴密文。解不开的请求头会让
+  本次模型请求报错；MCP server 的 headers 解不开时该 server 直接跳过，都不会把密文发出去。
 
 因此加密不替代文件权限：写配置时会把 `novabot.json` 与数据库收到 `0600`（POSIX）。
 

@@ -124,8 +124,10 @@ alone; it does **not** protect against a local process that can read
 `~/.novabot/data/novabot.db` (the master key lives in the same file), against someone who can
 edit the config (`base_url` can be repointed), or against backing up the whole `~/.novabot`
 directory (the master key travels with it). Headers, MCP headers and login tokens are not
-encrypted. Encryption does not replace file permissions: the config and database are chmod
-`0600` on POSIX.
+encrypted automatically, but any config value starting with `enc:v1:sm4:` is decrypted on
+read (including headers). An undecryptable model header fails that request; an MCP server
+with an undecryptable header is skipped, so ciphertext is never sent. Encryption does not
+replace file permissions: the config and database are chmod `0600` on POSIX.
 
 ### 7.2 Other data
 

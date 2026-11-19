@@ -10,7 +10,7 @@ from api.v1.auth.deps import require_admin
 from config import config
 from const.subagents import DESCRIPTIONS, ROLES, TITLES
 from service.config import user_config_store
-from service.model_catalog import is_usable, model_catalog, thinking_options
+from service.model_catalog import has_credentials, is_usable, model_catalog, thinking_options
 from util.secrets import SecretStore, config_file_values, db_values
 from service.user.user_service import UserCtx
 
@@ -85,7 +85,7 @@ async def list_models(ctx: UserCtx = Depends(resolve_user_ctx)):
                         f"{provider.code}/{model.code}")["levels"],
                     "num_ctx": model.num_ctx or config.LLM_MAX_INPUT_TOKENS,
                     # 只给是否配置 key，不回传 key/headers/base_url。
-                    "configured": bool(provider.api_key),
+                    "configured": has_credentials(provider),
                 } for model in (provider.models or [])],
             })
     default_model = data.agent.model if data and data.agent else ""

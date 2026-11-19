@@ -79,8 +79,12 @@ base_url + /chat/completions
 
 ---
 
-> provider 的 `key` / `api_key` 可以是密文（`enc:v1:sm4:...`），读取时自动解密；
-> 手写成明文同样可用。加密与主密钥的用法见[配置说明 §10.5](configuration.md#105-密钥加密可选)。
+> provider 的 `key` / `api_key` 可以是密文（`enc:v1:sm4:...`），`headers` 里的任意值也可以；
+> 读取时整份配置统一解密，手写成明文同样可用。注意：安装脚本只会自动加密 `key` 字段，
+> header 里的密文需要自己贴入（把值临时写进某个 `key` 字段，跑
+> `python -m util.secret_cli encrypt-config`，再从文件里复制即可）；解不开时该请求会直接报错，
+> 不会把密文发出去。
+> 加密与主密钥的用法见[配置说明 §10.5](configuration.md#105-密钥加密可选)。
 
 ## 4. 模型字段
 
@@ -462,7 +466,7 @@ intranet/qwen3-32b
 
 ## 12. 安全提醒
 
-- `key` 和 `headers` 都是明文存在 `~/.novabot/novabot.json`
+- `key` 和 `headers` 默认是明文存在 `~/.novabot/novabot.json`；可以改用 `enc:v1:sm4:...` 密文
 - 不要把该文件提交进仓库
 - 不要把带密钥的配置贴到 issue、聊天记录或截图里
 - 内网 token 和模型 key 一样，按敏感信息处理

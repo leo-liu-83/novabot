@@ -212,7 +212,8 @@ def cmd_init(args) -> int:
     has_ciphertext = any(sec.is_ciphertext(v) for v in collect_values(config_path, db_path))
 
     if args.rotate:
-        return _rotate(store, config_path, db_path, provided)
+        return _rotate(store, config_path, db_path, provided,
+                       skip_broken=getattr(args, "skip_broken", False))
 
     if existing is not None:
         if provided is not None and provided[1] != existing[1]:
@@ -222,15 +223,16 @@ def cmd_init(args) -> int:
         if provided is not None:
             print("已存在同一把主密钥，未修改")
         action = "使用库中主密钥"
+        master = existing
     else:
         if provided is None:
             if has_ciphertext and not args.force:
                 print("配置里已有密文，但库里没有主密钥：自动生成只会让旧密文永久解不开。\n"
-                      "请用原主密钥运行（NOVABOT_MASTER_KEY=...），或加 --force 承认丢失并重填。",
+                      "请用原主密钥运行（NOVABOT_MASTER_KEY=...），或加 --force 承认丢失并重填。\n"
+                      "如果那条只是恰好以 enc:v1:sm4: 开头的普通文案，删掉它即可。",
                       file=sys.stderr)
                 return 1
             provided = ("sm2", sec.generate_master_key())
-            print_master(provided[1])
         elif has_ciphertext and not args.force:
             # 用提供的密钥先试开一遍：不匹配就退出，别把它落库（落库后旧密文永远解不开）
             for value in collect_values(config_path, db_path):
@@ -241,26 +243,45 @@ def cmd_init(args) -> int:
                 except sec.SecretError as exc:
                     print(f"密钥与密文不匹配（{exc}）。没有写入任何文件。", file=sys.stderr)
                     return 1
-        store.save_master(provided[0], provided[1])
         action = "已保存主密钥"
+        master = provided
+        # 先按新主密钥加密文件，最后再落库：写文件失败时库里还没有新密钥，旧密文仍可解
+        store.use_master(provided[0], provided[1])
 
     changed, broken = encrypt_both(store, config_path)
     db_changed, db_broken = encrypt_db(store, db_path)
-    master = store.master()
+    if existing is None:
+        store.save_master(master[0], master[1])
+        if provided_text == "":
+            print_master(master[1])
     print(f"{action}（{master[0]}，指纹 {sec.fingerprint(master[1])}）")
     _print_result("加密完成", changed + db_changed, broken + db_broken)
     return 0
 
 
 def _rotate(store: sec.SecretStore, config_path: str, db_path: str,
-            provided: Optional[tuple[str, str]]) -> int:
-    """旧密钥解出全部值，再用新密钥整体重写；任何一条解不开就整体中止。"""
+            provided: Optional[tuple[str, str]], *, skip_broken: bool = False) -> int:
+    """旧密钥解出全部值，再用新密钥整体重写；任何一条解不开就整体中止。
+
+    文件先写、主密钥最后落库：中途写盘失败时库里还是旧密钥，不会留下一堆解不开的密文。
+    """
     existing = store.master()
     if existing is None:
         print("库里没有主密钥，无法轮换；请先运行 init", file=sys.stderr)
         return 1
 
-    # 第一步：内存里全部解密（不落盘），任何一条失败就退出
+    # 第一步：内存里全部解密（不落盘），默认任何一条失败就退出；
+    # --skip-broken 用于恰好以 enc:v1:sm4: 开头的普通文案：跳过并保持原样
+    skipped: list[str] = []
+
+    def on_broken(label: str, exc: Exception) -> bool:
+        if not skip_broken:
+            print(f"轮换中止：{label} 解不开（{exc}）。没有写入任何文件。", file=sys.stderr)
+            return False
+        print(f"轮换跳过：{label} 解不开（{exc}），保持原样。", file=sys.stderr)
+        skipped.append(label)
+        return True
+
     data = load_config(config_path) if os.path.exists(config_path) else {}
     backup = backup_path(config_path)
     backup_data = load_config(backup) if os.path.exists(backup) else None
@@ -282,8 +303,17 @@ def _rotate(store: sec.SecretStore, config_path: str, db_path: str,
                 try:
                     holder[field] = store.reveal(value)
                 except sec.SecretError as exc:
-                    print(f"轮换中止：{field} 解不开（{exc}）。没有写入任何文件。", file=sys.stderr)
-                    return 1
+                    if not on_broken(f"{field}", exc):
+                        return 1
+    slots = sec.ciphertext_slots(data)
+    if backup_data is not None:
+        slots += sec.ciphertext_slots(backup_data)
+    for container, key, path in slots:
+        try:
+            container[key] = store.reveal(container[key])
+        except sec.SecretError as exc:
+            if not on_broken(path, exc):
+                return 1
     db_plain = []
     for row in rows:
         value = row["api_key"]
@@ -293,15 +323,15 @@ def _rotate(store: sec.SecretStore, config_path: str, db_path: str,
             try:
                 value = store.reveal(value)
             except sec.SecretError as exc:
-                print(f"轮换中止：{row['provider']} 的 key 解不开（{exc}）。没有写入任何文件。",
-                      file=sys.stderr)
+                if on_broken(f"{row['provider']} 的 key", exc):
+                    continue
                 return 1
         db_plain.append((row["uid"], row["provider"], value))
 
-    # 第二步：换新主密钥，整体重写
+    # 第二步：用新主密钥整体重写；落库放到最后，写文件失败时旧密钥仍能解开现有密文
     new_master = provided or ("sm2", sec.generate_master_key())
     new_store = sec.SecretStore(db_path)
-    new_store.save_master(new_master[0], new_master[1], replace=True)
+    new_store.use_master(new_master[0], new_master[1])
 
     def reseal(container: dict) -> None:
         for holder in [h for _l, h in _config_entries(container)]:
@@ -311,6 +341,8 @@ def _rotate(store: sec.SecretStore, config_path: str, db_path: str,
                     holder[field] = new_store.encrypt_if_plain(value)
 
     reseal(data)
+    for container, key, _path in slots:
+        container[key] = new_store.encrypt_if_plain(container[key])
     if config_path and data:
         save_config(config_path, data)
     if backup_data is not None:
@@ -330,10 +362,15 @@ def _rotate(store: sec.SecretStore, config_path: str, db_path: str,
         finally:
             conn.close()
 
+    new_store.save_master(new_master[0], new_master[1], replace=True)
     if provided is None:
         print_master(new_master[1])
     print(f"主密钥已轮换（{new_master[0]}，指纹 {sec.fingerprint(new_master[1])}）")
     _print_result("重新加密完成", len(holders) + db_changed, [])
+    if skipped:
+        print(f"有 {len(skipped)} 处带密文前缀但解不开的值保持原样：", file=sys.stderr)
+        for label in skipped:
+            print(f"  - {label}", file=sys.stderr)
     return 0
 
 
@@ -401,6 +438,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true",
                       help="有密文但无主密钥时仍生成新密钥（旧密文将无法解开）")
     init.add_argument("--rotate", action="store_true", help="用新主密钥重加密全部值")
+    init.add_argument("--skip-broken", action="store_true",
+                      help="轮换时跳过解不开的值（恰好带密文前缀的普通文案），保持原样")
     init.set_defaults(func=cmd_init)
 
     encrypt_config = sub.add_parser("encrypt-config", help="只加密配置文件（含 .bak）")

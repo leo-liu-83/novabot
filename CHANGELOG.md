@@ -3,6 +3,30 @@
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，规则见 [版本与发布](docs/versioning.md)。
 本文件只记录对外可见的变化；内部开发过程与提交历史不在其中。
 
+## 0.3.1 — 2026-11-19
+
+### 新增
+
+- 配置文件里**任何**以 `enc:v1:sm4:` 开头的值都会在读取时解密，不再限定字段名：
+  内网网关可以只用 `headers.Authorization` 的密文鉴权，不必再配一个用不上的 `api_key`
+- 只有 `headers.Authorization`、没有 key 的 provider 视为已配置，Web 模型选择器可以选、
+  子代理也可以指定
+
+### 变更
+
+- 加密范围不变：`init` / `encrypt-config` 仍只加密 `key` / `api_key`；header 密文需要手贴，
+  文档补了获取方法
+- `init --rotate` 会重加密配置文件与 `.bak` 里任意位置的密文；新增 `--skip-broken`，
+  跳过恰好以 `enc:v1:sm4:` 开头的普通文案
+- `status` 的密文条数包含 header 里的密文
+
+### 修复
+
+- 解不开的模型请求头直接报错，不再把密文当 token 发给服务端
+- 解不开的 MCP 请求头会让该 server 被跳过，不再把密文发出去
+- `init` 与 `--rotate` 改为先写文件、最后落库：写盘失败时旧主密钥仍在，已有密文不会变成解不开
+- `status` 的明文计数不再把 `base_url`、模型名等非密钥字段算进去
+
 ## 0.3.0 — 2026-11-18
 
 ### 新增

@@ -5,6 +5,9 @@
 from typing import Optional
 from urllib.parse import urlparse
 
+from exception.model_exception import ModelCallError
+from util.secrets import is_ciphertext
+
 # 请求头里可用的会话占位符；发送前替换成当前会话 ID
 SESSION_ID_PLACEHOLDER = "${session_id}"
 # 这个头按语义就是会话 ID：只要配置了，运行时有会话 ID 就自动替换
@@ -26,6 +29,10 @@ def resolve_runtime_headers(headers: Optional[dict], session_id: Optional[str]) 
     resolved = {}
     for key, value in headers.items():
         text = str(value)
+        if is_ciphertext(text):
+            raise ModelCallError(
+                f"请求头 {key} 仍是密文（主密钥缺失或与配置不匹配）："
+                "请补回主密钥后重启，或把该值改回明文")
         if key.lower() == SESSION_ID_HEADER and sid:
             resolved[key] = sid
             continue

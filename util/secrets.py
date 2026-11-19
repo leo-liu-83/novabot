@@ -234,6 +234,14 @@ class SecretStore:
         return True
 
     # ── 对外的值处理 ────────────────────────────────
+    def use_master(self, algo: str, material: str) -> None:
+        """让 store 先按给定主密钥工作，但不写库。
+
+        首次 init 与 --rotate 都要"先写文件、最后落库"：中途写文件失败时库里还是旧密钥，
+        用户的密文不会变成解不开的状态。
+        """
+        self._cache = (algo, material)
+
     def reveal(self, value: Optional[str]) -> Optional[str]:
         """明文原样返回；密文解开；解不开抛 SecretError。"""
         if not is_ciphertext(value):
@@ -288,6 +296,46 @@ class SecretStore:
 CONFIG_KEY_FIELDS = ("key", "api_key")
 
 
+def _secret_slots(node, path=""):
+    """深度优先产出 (容器, 键, 路径)；只认 str 值且以 PREFIX 开头。"""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            child = f"{path}.{key}" if path else str(key)
+            if isinstance(value, str):
+                if is_ciphertext(value):
+                    yield node, key, child
+            else:
+                yield from _secret_slots(value, child)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            child = f"{path}[{index}]"
+            if isinstance(value, str):
+                if is_ciphertext(value):
+                    yield node, index, child
+            else:
+                yield from _secret_slots(value, child)
+
+
+def ciphertext_slots(document: object) -> list[tuple[object, object, str]]:
+    """文档里每个密文值的位置：容器可以是 dict 或 list，路径只用于报错。"""
+    return list(_secret_slots(document))
+
+
+def ciphertext_values(document: object) -> list[str]:
+    return [container[key] for container, key, _path in ciphertext_slots(document)]
+
+
+def reveal_tree(document: object, store: SecretStore) -> list[str]:
+    """原地解开所有密文，返回解不开的路径。不改动明文与其它类型。"""
+    broken = []
+    for container, key, path in ciphertext_slots(document):
+        try:
+            container[key] = store.reveal(container[key])
+        except SecretError:
+            broken.append(path)
+    return broken
+
+
 def config_key_holders(document: dict) -> list[tuple[str, dict]]:
     """配置文件里所有带 key 的槽位：(标签, 所属 dict)。
 
@@ -314,12 +362,18 @@ def config_key_holders(document: dict) -> list[tuple[str, dict]]:
 
 
 def config_values(document: dict) -> list[str]:
+    """status / 轮换用：明文 key 字段 + 任意位置的密文。
+
+    明文只认 key/api_key，避免把 base_url、模型名算进「还剩几条明文」；
+    密文整树收，header 里手贴的密文也要计入。key 字段的密文只出现一次。
+    """
     values = []
     for _label, holder in config_key_holders(document):
         for field in CONFIG_KEY_FIELDS:
             value = holder.get(field)
-            if isinstance(value, str) and value:
+            if isinstance(value, str) and value and not is_ciphertext(value):
                 values.append(value)
+    values.extend(ciphertext_values(document))
     return values
 
 

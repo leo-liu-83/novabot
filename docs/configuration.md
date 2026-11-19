@@ -242,8 +242,11 @@ python -m util.secret_cli init --config ~/.novabot/novabot.json --data-dir ~/.no
 python -m util.secret_cli status --config ~/.novabot/novabot.json --data-dir ~/.novabot/data
 ```
 
-- 换主密钥用 `init --rotate`（先解旧密文，再用新密钥整体重写；任一条解不开就整体中止）
+- 换主密钥用 `init --rotate`（先解旧密文，再用新密钥整体重写；任一条解不开就整体中止）。
+  如果有恰好以 `enc:v1:sm4:` 开头的普通文案，用 `--skip-broken` 跳过它们（保持原样）
 - 手写成明文仍然可用；"系统信息"页会显示加密状态、指纹与剩余明文条数
+- 配置文件里**任何**以 `enc:v1:sm4:` 开头的值都会在读取时解密（包括 `headers`）；
+  解不开的请求头会让本次请求报错，不会把密文发出去
 - 主密钥存在 `~/.novabot/data/novabot.db` 的 `app_secrets` 表；威胁模型与不覆盖范围见
   [安全](security.md#71-可选的密钥加密)
 

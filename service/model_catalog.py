@@ -37,11 +37,29 @@ def _dict(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def has_credentials(provider: ProviderDto) -> bool:
+    """provider 是否带了可用的凭据：明文 key，或非密文的 Authorization 请求头。
+
+    内网网关常常不收 key、只认 `headers.Authorization`；这类 provider 没有 api_key
+    但照样能用。密文说明本机没有主密钥/不匹配，不能当作可用凭据。
+    """
+    key = provider.api_key
+    if key and not is_ciphertext(key):
+        return True
+    headers = provider.headers if isinstance(provider.headers, dict) else {}
+    for name, value in headers.items():
+        if str(name).lower() != "authorization":
+            continue
+        if isinstance(value, str) and value.strip() and not is_ciphertext(value):
+            return True
+    return False
+
+
 def is_usable(model_id: str) -> bool:
-    """静态配置能判断的部分：provider 存在、有 key、静态模型在清单里。
+    """静态配置能判断的部分：provider 存在、有凭据、静态模型在清单里。
 
     动态发现型 provider 不查模型清单——那要发一次网络请求，而发现结果本来就可能有延迟；
-    真正调用时的错误由模型层报，这里只挡住"模型 id 写错/没配 key"这类必然失败。
+    真正调用时的错误由模型层报，这里只挡住"模型 id 写错/没配凭据"这类必然失败。
     """
     provider_code, _, model_code = (model_id or "").partition("/")
     if not provider_code or not model_code:
@@ -51,9 +69,7 @@ def is_usable(model_id: str) -> bool:
     if not providers:
         return False
     provider = providers[-1]  # 与 llm_manager 一致：同 code 取最后一个（用户配置覆盖内置）
-    # 密文说明本机没有主密钥/不匹配：当作"没配 key"，别把它当可用模型，
-    # 更别拿密文去发请求
-    if not provider.api_key or is_ciphertext(provider.api_key):
+    if not has_credentials(provider):
         return False
     if provider.dynamic_models:
         return True
